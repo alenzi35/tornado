@@ -78,17 +78,20 @@ jobs:
           git push
 
       # ----------------------------
-      # 7. Sleep until next hour and re-trigger
+      # 7. Sleep until next :55 UTC
       # ----------------------------
-      - name: Wait until next hour
+      - name: Wait until next :55 UTC
         run: |
-          # Sleep until :55 of the next hour
-          now=$(date -u +%M)
-          minute=${now#0}
+          now_min=$(date -u +%M)
+          minute=${now_min#0}
+          # Calculate minutes until :55
           wait_minutes=$(( (55 - minute + 60) % 60 ))
-          echo "Sleeping for $wait_minutes minutes..."
+          echo "Sleeping for $wait_minutes minutes until :55 UTC..."
           sleep $((wait_minutes * 60))
-      
+
+      # ----------------------------
+      # 8. Self-trigger workflow
+      # ----------------------------
       - name: Self-trigger workflow
         uses: peter-evans/workflow-dispatch@v2
         with:
