@@ -1,7 +1,11 @@
 name: Process RAP Tornado Data
 
 on:
-  workflow_dispatch:  # Only manual or self-triggered runs
+  # Run manually if you ever want to
+  workflow_dispatch:
+  # Run automatically every hour at :55 UTC
+  schedule:
+    - cron: "55 * * * *"
 
 permissions:
   contents: write
@@ -50,21 +54,21 @@ jobs:
             requests
 
       # ----------------------------
-      # 4. Process RAP
+      # 4. Process RAP data
       # ----------------------------
       - name: Process RAP data
         run: |
           python scripts/process_rap.py
 
       # ----------------------------
-      # 5. Convert borders
+      # 5. Convert borders to LCC
       # ----------------------------
       - name: Convert borders to LCC
         run: |
           python scripts/convert_borders_to_lcc.py
 
       # ----------------------------
-      # 6. Commit + push outputs
+      # 6. Commit + push updated files
       # ----------------------------
       - name: Commit and push data
         run: |
@@ -73,29 +77,6 @@ jobs:
 
           git add map/data
 
-          git commit -m "Auto update RAP data" || echo "Nothing to commit"
+          git commit -m "Auto update RAP + LCC borders" || echo "Nothing to commit"
 
           git push
-
-      # ----------------------------
-      # 7. Sleep until next :55 UTC
-      # ----------------------------
-      - name: Wait until next :55 UTC
-        run: |
-          now_min=$(date -u +%M)
-          minute=${now_min#0}
-          # Calculate minutes until :55
-          wait_minutes=$(( (55 - minute + 60) % 60 ))
-          echo "Sleeping for $wait_minutes minutes until :55 UTC..."
-          sleep $((wait_minutes * 60))
-
-      # ----------------------------
-      # 8. Self-trigger workflow
-      # ----------------------------
-      - name: Self-trigger workflow
-        uses: peter-evans/workflow-dispatch@v2
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          repository: ${{ github.repository }}
-          workflow: process_rap.yml
-          ref: main
