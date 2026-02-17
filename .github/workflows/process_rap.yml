@@ -1,14 +1,10 @@
 name: Process RAP Tornado Data
 
 on:
-  schedule:
-    - cron: "*/5 * * * *"   # TEST: every 5 minutes
-  workflow_dispatch:
+  workflow_dispatch:  # Only manual or self-triggered runs
 
 permissions:
   contents: write
-  actions: write
-
 
 jobs:
   process_rap:
@@ -16,16 +12,23 @@ jobs:
 
     steps:
 
+      # ----------------------------
+      # 1. Checkout repo
+      # ----------------------------
       - name: Checkout repo
         uses: actions/checkout@v4
 
-
+      # ----------------------------
+      # 2. Setup Python
+      # ----------------------------
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-
+      # ----------------------------
+      # 3. Install system + Python deps
+      # ----------------------------
       - name: Install dependencies
         run: |
           sudo apt-get update
@@ -46,23 +49,23 @@ jobs:
             fiona \
             requests
 
-
-      # ---- DEBUG: show UTC time (important) ----
-      - name: Show current UTC time
-        run: |
-          date -u
-
-
+      # ----------------------------
+      # 4. Process RAP
+      # ----------------------------
       - name: Process RAP data
         run: |
           python scripts/process_rap.py
 
-
+      # ----------------------------
+      # 5. Convert borders
+      # ----------------------------
       - name: Convert borders to LCC
         run: |
           python scripts/convert_borders_to_lcc.py
 
-
+      # ----------------------------
+      # 6. Commit + push outputs
+      # ----------------------------
       - name: Commit and push data
         run: |
           git config user.name "github-actions"
@@ -73,3 +76,23 @@ jobs:
           git commit -m "Auto update RAP data" || echo "Nothing to commit"
 
           git push
+
+      # ----------------------------
+      # 7. Sleep until next hour and re-trigger
+      # ----------------------------
+      - name: Wait until next hour
+        run: |
+          # Sleep until :55 of the next hour
+          now=$(date -u +%M)
+          minute=${now#0}
+          wait_minutes=$(( (55 - minute + 60) % 60 ))
+          echo "Sleeping for $wait_minutes minutes..."
+          sleep $((wait_minutes * 60))
+      
+      - name: Self-trigger workflow
+        uses: peter-evans/workflow-dispatch@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          repository: ${{ github.repository }}
+          workflow: process_rap.yml
+          ref: main
