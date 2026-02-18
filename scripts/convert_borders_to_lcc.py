@@ -6,7 +6,7 @@ from pyproj import CRS
 # ================= CONFIG =================
 
 # Update to 50m Natural Earth shapefile in your repo
-SHAPEFILE_PATH = "map/data/ne_50m_admin_1_states_provinces_lakes.shp"
+SHAPEFILE_PATH = "map/data/ne_50m_admin_1_states_provinces.shp"
 OUTPUT_PATH = "map/data/conus_lcc.json"
 
 print("\n=== LOADING STATES SHAPEFILE ===")
