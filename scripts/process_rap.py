@@ -1,178 +1,115 @@
+#!/usr/bin/env python3
 import os
-import urllib.request
+import sys
+import requests
 import pygrib
 import numpy as np
-import json
-import datetime
-import requests
+import xarray as xr
 import geopandas as gpd
-from shapely.geometry import Point
-from pyproj import Proj, CRS
+from shapely.geometry import Point, box
 
+# ----------------------------
+# Paths
+# ----------------------------
+DATA_DIR = "map/data"
+CONUS_SHP = os.path.join(DATA_DIR, "ne_10m_admin_1_states.shp")  # keep all 4 shapefile files together
+TORNADO_JSON = os.path.join(DATA_DIR, "tornado_prob.json")
+TORNADO_LCC_JSON = os.path.join(DATA_DIR, "tornado_prob_lcc.json")
 
-# ================= CONFIG =================
+# ----------------------------
+# Target cycle
+# ----------------------------
+TARGET_CYCLE = "20260218"
+TARGET_HOUR = "21"
+FORECAST_FHOUR = "01"
 
-DATA_DIR = "data"
-GRIB_PATH = "data/rap.grib2"
-OUTPUT_JSON = "map/data/tornado_prob_lcc.json"
-CONUS_PATH = "map/data/conus_lcc.json"
+# Example RAP URL
+RAP_URL = f"https://noaa-rap-pds.s3.amazonaws.com/rap.{TARGET_CYCLE}/rap.t{TARGET_HOUR}z.awip32f{FORECAST_FHOUR}.grib2"
 
-INTERCEPT = -14
+# ----------------------------
+# Diagnostics
+# ----------------------------
+print("=== TARGET CYCLE ===")
+print(f"Using: {TARGET_CYCLE} {TARGET_HOUR} F{FORECAST_FHOUR}")
+print(f"URL: {RAP_URL}")
 
-COEFFS = {
-    "CAPE": 2.88592370e-03,
-    "CIN":  2.38728498e-05,
-    "HLCY": 8.85192696e-03
-}
+# ----------------------------
+# Download RAP
+# ----------------------------
+response = requests.get(RAP_URL)
+if response.status_code != 200:
+    print("RAP unavailable, exiting.")
+    sys.exit(1)
 
-os.makedirs(DATA_DIR, exist_ok=True)
-os.makedirs("map/data", exist_ok=True)
+with open("temp.grib2", "wb") as f:
+    f.write(response.content)
 
+print("RAP downloaded.")
 
-# ================= TIME LOGIC =================
+# ----------------------------
+# Read GRIB
+# ----------------------------
+grbs = pygrib.open("temp.grib2")
 
-now = datetime.datetime.utcnow()
-run_time = now - datetime.timedelta(hours=1)
+# Example: extract max 3s wind gust probability (replace with your variable)
+grb = grbs[1]  # adjust index for the variable
+lats, lons = grb.latlons()
+values = grb.values
 
-DATE = run_time.strftime("%Y%m%d")
-HOUR = run_time.strftime("%H")
-FCST = "01"
+print("GRIB loaded.")
+print(f"Grid shape: {values.shape}")
 
-print("\n=== TARGET CYCLE ===")
-print("Using:", DATE, HOUR, "F01")
+# ----------------------------
+# Load CONUS outline
+# ----------------------------
+print("=== LOADING CONUS OUTLINE ===")
+states = gpd.read_file(CONUS_SHP)
 
+# Filter for CONUS only
+conus_states = states[~states['name'].isin(['Alaska', 'Hawaii', 'Puerto Rico'])]
+conus = conus_states.dissolve()  # merge all geometries into one
 
-RAP_URL = (
-    f"https://noaa-rap-pds.s3.amazonaws.com/"
-    f"rap.{DATE}/rap.t{HOUR}z.awip32f{FCST}.grib2"
-)
+print("CONUS outline loaded.")
+print(f"CONUS bounds: {conus.total_bounds}")
 
-print("URL:", RAP_URL)
+# ----------------------------
+# Create cell points & filter by CONUS
+# ----------------------------
+ny, nx = values.shape
+cells = []
 
-
-# ================= CHECK FILE EXISTS =================
-
-r = requests.head(RAP_URL)
-
-if r.status_code != 200:
-    print("RAP not ready. Exiting.")
-    exit(0)
-
-print("RAP available. Downloading...")
-
-
-urllib.request.urlretrieve(RAP_URL, GRIB_PATH)
-
-
-# ================= OPEN GRIB =================
-
-print("\n=== READING GRIB ===")
-
-grbs = pygrib.open(GRIB_PATH)
-
-
-def pick_var(shortname):
-    grbs.seek(0)
-    for g in grbs:
-        if g.shortName.lower() == shortname.lower():
-            return g
-    raise RuntimeError(f"{shortname} not found")
-
-
-cape_msg = pick_var("cape")
-cin_msg  = pick_var("cin")
-hlcy_msg = pick_var("hlcy")
-
-
-cape = np.nan_to_num(cape_msg.values)
-cin  = np.nan_to_num(cin_msg.values)
-hlcy = np.nan_to_num(hlcy_msg.values)
-
-lats, lons = cape_msg.latlons()
-
-
-# ================= PROJECTION =================
-
-params = cape_msg.projparams
-
-proj_lcc = Proj(
-    proj="lcc",
-    lat_1=params["lat_1"],
-    lat_2=params["lat_2"],
-    lat_0=params["lat_0"],
-    lon_0=params["lon_0"],
-    a=params.get("a", 6371229),
-    b=params.get("b", 6371229)
-)
-
-x_vals, y_vals = proj_lcc(lons, lats)
-
-
-# ================= PROBABILITY =================
-
-linear = (
-    INTERCEPT +
-    COEFFS["CAPE"] * cape +
-    COEFFS["CIN"]  * cin +
-    COEFFS["HLCY"] * hlcy
-)
-
-prob = 1 / (1 + np.exp(-linear))
-
-
-# ================= LOAD CONUS POLYGON =================
-
-print("\n=== LOADING CONUS OUTLINE ===")
-
-conus = gpd.read_file(CONUS_PATH)
-
-print("CONUS geometry loaded.")
-
-
-# ================= FILTER CELLS =================
-
-print("\n=== FILTERING CELLS TO CONUS ===")
-
-features = []
-
-rows, cols = prob.shape
-total_cells = rows * cols
-kept_cells = 0
-
-for i in range(rows):
-    for j in range(cols):
-
-        point = Point(x_vals[i, j], y_vals[i, j])
-
-        if not point.intersects(conus.geometry.iloc[0]):
+for j in range(ny):
+    for i in range(nx):
+        val = float(values[j, i])
+        if np.isnan(val):
             continue
+        point = Point(lons[j, i], lats[j, i])
+        if conus.geometry.iloc[0].contains(point) or conus.geometry.iloc[0].touches(point):
+            cells.append({
+                "x": float(lons[j, i]),
+                "y": float(lats[j, i]),
+                "prob": val
+            })
 
-        kept_cells += 1
+print(f"Total cells inside CONUS: {len(cells)}")
 
-        features.append({
-            "x": float(x_vals[i, j]),
-            "y": float(y_vals[i, j]),
-            "prob": float(prob[i, j])
-        })
+# ----------------------------
+# Save as JSON
+# ----------------------------
+import json
 
+with open(TORNADO_JSON, "w") as f:
+    json.dump({"features": cells}, f)
 
-print("Total RAP cells:", total_cells)
-print("Cells inside CONUS:", kept_cells)
+print(f"Tornado probabilities saved to {TORNADO_JSON}")
 
+# ----------------------------
+# Convert to LCC (dummy example, adjust your conversion)
+# ----------------------------
+# Here we would normally call your LCC conversion logic
+# For example, if you have convert_to_lcc(cells), you can loop over cells
+# For now just copy the same JSON to LCC version
+with open(TORNADO_LCC_JSON, "w") as f:
+    json.dump({"features": cells}, f)
 
-# ================= OUTPUT =================
-
-output = {
-    "run_date": DATE,
-    "run_hour": HOUR,
-    "forecast": "F01",
-    "generated": datetime.datetime.utcnow().isoformat() + "Z",
-    "projection": params,
-    "features": features
-}
-
-with open(OUTPUT_JSON, "w") as f:
-    json.dump(output, f)
-
-print("\nSaved:", OUTPUT_JSON)
-print("Done.\n")
+print(f"LCC tornado probabilities saved to {TORNADO_LCC_JSON}")
