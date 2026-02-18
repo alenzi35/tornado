@@ -6,19 +6,23 @@ import json
 import datetime
 import requests
 import geopandas as gpd
-from pyproj import Proj
 from shapely.geometry import Point
+from pyproj import Proj
 
 # ================= CONFIG =================
 
 DATA_DIR = "data"
-GRIB_PATH = "data/rap.grib2"
+GRIB_PATH = os.path.join(DATA_DIR, "rap.grib2")
 OUTPUT_JSON = "map/data/tornado_prob_lcc.json"
 
-CONUS_SHP = "map/data/ne_50m_admin_1_states_provinces_lakes.shp"  # Your 50m shapefile
-
 INTERCEPT = -14
-COEFFS = {"CAPE": 2.88592370e-03, "CIN": 2.38728498e-05, "HLCY": 8.85192696e-03}
+COEFFS = {
+    "CAPE": 2.88592370e-03,
+    "CIN":  2.38728498e-05,
+    "HLCY": 8.85192696e-03
+}
+
+CONUS_SHP = "map/data/ne_50m_admin_1_states_provinces_lakes.shp"
 
 os.makedirs(DATA_DIR, exist_ok=True)
 os.makedirs("map/data", exist_ok=True)
@@ -42,7 +46,7 @@ print("=== TARGET CYCLE ===")
 print("Using:", DATE, HOUR, "F01")
 print("URL:", RAP_URL)
 
-# ================= CHECK IF FILE EXISTS =================
+# ================= CHECK FILE =================
 
 def url_exists(url):
     r = requests.head(url)
@@ -52,16 +56,17 @@ if not url_exists(RAP_URL):
     print("RAP file not ready yet. Skipping.")
     exit(0)
 
-# ================= DOWNLOAD =================
-
+print("RAP available. Downloading...")
 urllib.request.urlretrieve(RAP_URL, GRIB_PATH)
 print("RAP downloaded.")
 
 # ================= OPEN GRIB =================
 
 grbs = pygrib.open(GRIB_PATH)
+print("=== READING GRIB ===")
 
 def pick_var(grbs, shortname, typeOfLevel=None, bottom=None, top=None):
+    grbs.seek(0)
     for g in grbs:
         if g.shortName.lower() != shortname.lower():
             continue
@@ -75,71 +80,66 @@ def pick_var(grbs, shortname, typeOfLevel=None, bottom=None, top=None):
         return g
     raise RuntimeError(f"{shortname} not found")
 
-# ================= LOAD DATA =================
-
-grbs.seek(0)
 cape_msg = pick_var(grbs, "cape", "surface")
-grbs.seek(0)
-cin_msg = pick_var(grbs, "cin", "surface")
-grbs.seek(0)
+cin_msg  = pick_var(grbs, "cin", "surface")
 hlcy_msg = pick_var(grbs, "hlcy", "heightAboveGroundLayer", 0, 1000)
 
 cape = np.nan_to_num(cape_msg.values)
-cin = np.nan_to_num(cin_msg.values)
+cin  = np.nan_to_num(cin_msg.values)
 hlcy = np.nan_to_num(hlcy_msg.values)
 
 lats, lons = cape_msg.latlons()
-
 params = cape_msg.projparams
-proj_lcc = Proj(proj="lcc", lat_1=params["lat_1"], lat_2=params["lat_2"],
-                lat_0=params["lat_0"], lon_0=params["lon_0"],
-                a=params.get("a", 6371229), b=params.get("b", 6371229))
+
+proj_lcc = Proj(
+    proj="lcc",
+    lat_1=params["lat_1"],
+    lat_2=params["lat_2"],
+    lat_0=params["lat_0"],
+    lon_0=params["lon_0"],
+    a=params.get("a", 6371229),
+    b=params.get("b", 6371229)
+)
+
 x_vals, y_vals = proj_lcc(lons, lats)
 
-# ================= LOAD CONUS SHAPE =================
-
+# ================= LOAD CONUS =================
 print("=== LOADING CONUS OUTLINE ===")
-states = gpd.read_file(CONUS_SHP)
+conus = gpd.read_file(CONUS_SHP)
+conus = conus.to_crs(cape_msg.projparams)  # match projection
 
-# Keep only CONUS (exclude Alaska, Hawaii, PR, etc.)
-CONUS_STATES = [
-    "AL","AZ","AR","CA","CO","CT","DE","FL","GA","ID","IL","IN","IA","KS","KY","LA",
-    "ME","MD","MA","MI","MN","MS","MO","MT","NE","NV","NH","NJ","NM","NY","NC",
-    "ND","OH","OK","OR","PA","RI","SC","SD","TN","TX","UT","VT","VA","WA","WV","WI","WY"
-]
-states = states[states["postal"].isin(CONUS_STATES)]
+# create union polygon for CONUS only
+conus_union = conus.geometry.unary_union
 
-# ================= FEATURES =================
+# ================= CALCULATE PROBABILITY =================
+linear = INTERCEPT + COEFFS["CAPE"]*cape + COEFFS["CIN"]*cin + COEFFS["HLCY"]*hlcy
+prob = 1 / (1 + np.exp(-linear))
 
+# ================= GENERATE FEATURES =================
 features = []
-rows, cols = prob.shape = cape.shape
+rows, cols = prob.shape
 
 for i in range(rows):
     for j in range(cols):
-        x = x_vals[i, j]
-        y = y_vals[i, j]
+        x = x_vals[i,j]
+        y = y_vals[i,j]
 
         dx = x_vals[i, j+1] - x if j < cols-1 else x - x_vals[i, j-1]
         dy = y_vals[i+1, j] - y if i < rows-1 else y - y_vals[i-1, j]
 
-        pt = Point(x, y)
-        inside = states.contains(pt).any()
-        if not inside:
+        # filter only points inside CONUS
+        if not conus_union.contains(Point(x, y)):
             continue
-
-        linear = INTERCEPT + COEFFS["CAPE"] * cape[i,j] + COEFFS["CIN"] * cin[i,j] + COEFFS["HLCY"] * hlcy[i,j]
-        prob = 1 / (1 + np.exp(-linear))
 
         features.append({
             "x": float(x),
             "y": float(y),
             "dx": float(abs(dx)),
             "dy": float(abs(dy)),
-            "prob": float(prob)
+            "prob": float(prob[i,j])
         })
 
-# ================= OUTPUT =================
-
+# ================= OUTPUT JSON =================
 valid_start = f"{int(HOUR):02d}:00"
 valid_end = f"{(int(HOUR)+1)%24:02d}:00"
 
@@ -157,3 +157,4 @@ with open(OUTPUT_JSON, "w") as f:
     json.dump(output, f)
 
 print("Updated:", OUTPUT_JSON)
+print("Number of features:", len(features))
