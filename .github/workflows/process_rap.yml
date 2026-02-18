@@ -1,23 +1,29 @@
-name: Process RAP Data
+name: Process RAP Tornado Data
 
 on:
+  # Run manually if needed
+  workflow_dispatch:
+  # Run automatically every hour at :55 UTC
   schedule:
     - cron: "55 * * * *"
-  workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
-  process:
+  process_rap:
     runs-on: ubuntu-latest
 
     steps:
+
       # ----------------------------
-      # Checkout repo
+      # 1. Checkout repo
       # ----------------------------
-      - name: Checkout repository
+      - name: Checkout repo
         uses: actions/checkout@v4
 
       # ----------------------------
-      # Set up Python
+      # 2. Setup Python
       # ----------------------------
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -25,7 +31,7 @@ jobs:
           python-version: "3.11"
 
       # ----------------------------
-      # Install system dependencies
+      # 3. Install system dependencies
       # ----------------------------
       - name: Install system dependencies
         run: |
@@ -36,49 +42,48 @@ jobs:
             libproj-dev \
             proj-data \
             proj-bin \
-            libeccodes-dev \
-            eccodes
+            libeccodes-dev
 
       # ----------------------------
-      # Install Python packages
+      # 4. Install Python packages
       # ----------------------------
-      - name: Install Python packages
+      - name: Install Python dependencies
         run: |
-          python -m pip install --upgrade pip
+          pip install --upgrade pip
           pip install \
+            pygrib \
             numpy \
-            pandas \
             xarray \
-            netCDF4 \
             geopandas \
-            shapely \
             pyproj \
+            shapely \
             fiona \
-            requests \
-            pygrib
+            requests
 
       # ----------------------------
-      # Diagnostics
+      # 5. Process RAP data
       # ----------------------------
-      - name: Verify shapefile files
-        run: |
-          echo "Listing map/data contents:"
-          ls -lah map/data/
-
-      # ----------------------------
-      # Run RAP processor
-      # ----------------------------
-      - name: Run RAP processing
+      - name: Process RAP data
         run: |
           python scripts/process_rap.py
 
       # ----------------------------
-      # Commit results
+      # 6. Convert borders to LCC
       # ----------------------------
-      - name: Commit and push changes
+      - name: Convert borders to LCC
+        run: |
+          python scripts/convert_borders_to_lcc.py
+
+      # ----------------------------
+      # 7. Commit + push updated files
+      # ----------------------------
+      - name: Commit and push data
         run: |
           git config user.name "github-actions"
           git config user.email "actions@github.com"
-          git add -A
-          git diff --quiet && git diff --staged --quiet || git commit -m "Automated RAP update"
+
+          git add map/data
+
+          git commit -m "Auto update RAP + LCC borders" || echo "Nothing to commit"
+
           git push
