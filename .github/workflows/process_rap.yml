@@ -2,8 +2,8 @@ name: Process RAP Data
 
 on:
   schedule:
-    - cron: "55 * * * *"   # Runs at :15 every hour
-  workflow_dispatch:       # Allows manual run
+    - cron: "55 * * * *"
+  workflow_dispatch:
 
 jobs:
   process:
@@ -25,7 +25,7 @@ jobs:
           python-version: "3.11"
 
       # ----------------------------
-      # Install system dependencies (REQUIRED for GeoPandas)
+      # Install system dependencies
       # ----------------------------
       - name: Install system dependencies
         run: |
@@ -35,10 +35,12 @@ jobs:
             libgdal-dev \
             libproj-dev \
             proj-data \
-            proj-bin
+            proj-bin \
+            libeccodes-dev \
+            eccodes
 
       # ----------------------------
-      # Install Python dependencies
+      # Install Python packages
       # ----------------------------
       - name: Install Python packages
         run: |
@@ -52,10 +54,11 @@ jobs:
             shapely \
             pyproj \
             fiona \
-            requests
+            requests \
+            pygrib
 
       # ----------------------------
-      # Diagnostics — verify shapefile exists
+      # Diagnostics
       # ----------------------------
       - name: Verify shapefile files
         run: |
@@ -70,7 +73,7 @@ jobs:
           python scripts/process_rap.py
 
       # ----------------------------
-      # Commit updated outputs (if changed)
+      # Commit results
       # ----------------------------
       - name: Commit and push changes
         run: |
