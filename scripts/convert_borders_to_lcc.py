@@ -1,126 +1,86 @@
 import geopandas as gpd
-import requests
-import zipfile
-import io
 import json
+import os
 from pyproj import CRS
 
 
-# -----------------------------
-# Paths
-# -----------------------------
+# ================= CONFIG =================
 
-OUT_PATH = "map/data/borders_lcc.json"
-
-NE_URL = "https://naturalearth.s3.amazonaws.com/50m_cultural/ne_50m_admin_1_states_provinces.zip"
+SHAPEFILE_PATH = "data/shapefiles/ne_10m_admin_1_states_provinces_lakes.shp"
+OUTPUT_PATH = "map/data/conus_lcc.json"
 
 
-# -----------------------------
-# Download + unzip shapefile
-# -----------------------------
+print("\n=== LOADING STATES SHAPEFILE ===")
 
-print("Downloading Natural Earth borders...")
+states = gpd.read_file(SHAPEFILE_PATH)
 
-resp = requests.get(NE_URL)
-resp.raise_for_status()
-
-z = zipfile.ZipFile(io.BytesIO(resp.content))
-z.extractall("tmp_borders")
-
-print("Download complete.")
+print("Total features loaded:", len(states))
 
 
-# -----------------------------
-# Load shapefile
-# -----------------------------
+# ================= FILTER TO USA ONLY =================
 
-shp_path = "tmp_borders/ne_50m_admin_1_states_provinces.shp"
+states = states[states["admin"] == "United States of America"]
 
-print("Loading shapefile...")
-
-gdf = gpd.read_file(shp_path)
+print("US states count:", len(states))
 
 
-# -----------------------------
-# Filter to USA only
-# -----------------------------
+# ================= REMOVE NON-CONUS =================
 
-print("Filtering to USA...")
+exclude = [
+    "Alaska",
+    "Hawaii",
+    "Puerto Rico",
+    "Guam",
+    "American Samoa",
+    "Northern Mariana Islands",
+    "United States Virgin Islands"
+]
 
-gdf = gdf[gdf["admin"] == "United States of America"]
+states = states[~states["name"].isin(exclude)]
+
+print("CONUS states count:", len(states))
 
 
-# -----------------------------
-# Build RAP LCC projection
-# -----------------------------
+# ================= DISSOLVE TO SINGLE POLYGON =================
 
-print("Building LCC projection...")
+print("\n=== DISSOLVING TO CONUS POLYGON ===")
 
-lcc_proj = CRS.from_proj4(
-    "+proj=lcc "
-    "+lat_1=50 "
-    "+lat_2=50 "
-    "+lat_0=50 "
-    "+lon_0=253 "
-    "+a=6371229 "
-    "+b=6371229 "
-    "+units=m "
-    "+no_defs"
+conus = states.dissolve()
+
+print("Dissolved geometry type:", conus.geometry.iloc[0].geom_type)
+
+
+# ================= LOAD PROJECTION FROM RAP OUTPUT =================
+
+print("\n=== MATCHING RAP PROJECTION ===")
+
+with open("map/data/tornado_prob_lcc.json") as f:
+    rap_data = json.load(f)
+
+proj_params = rap_data["projection"]
+
+lcc_crs = CRS.from_proj4(
+    f"+proj=lcc "
+    f"+lat_1={proj_params['lat_1']} "
+    f"+lat_2={proj_params['lat_2']} "
+    f"+lat_0={proj_params['lat_0']} "
+    f"+lon_0={proj_params['lon_0']} "
+    f"+a={proj_params.get('a', 6371229)} "
+    f"+b={proj_params.get('b', 6371229)}"
 )
 
+conus = conus.to_crs(lcc_crs)
 
-# -----------------------------
-# Reproject
-# -----------------------------
-
-print("Reprojecting...")
-
-gdf_lcc = gdf.to_crs(lcc_proj)
+print("Reprojection complete.")
 
 
-# -----------------------------
-# Export to JSON
-# -----------------------------
+# ================= EXPORT GEOJSON =================
 
-print("Exporting JSON...")
+print("\n=== EXPORTING CONUS LCC OUTLINE ===")
 
-features = []
+os.makedirs("map/data", exist_ok=True)
 
-for geom in gdf_lcc.geometry:
+conus.to_file(OUTPUT_PATH, driver="GeoJSON")
 
-    if geom is None:
-        continue
-
-    if geom.geom_type == "MultiPolygon":
-
-        for poly in geom.geoms:
-            coords = list(poly.exterior.coords)
-
-            features.append(coords)
-
-    elif geom.geom_type == "Polygon":
-
-        coords = list(geom.exterior.coords)
-        features.append(coords)
-
-
-out = {
-    "projection": {
-        "proj": "lcc",
-        "lat_0": 50,
-        "lat_1": 50,
-        "lat_2": 50,
-        "lon_0": 253,
-        "a": 6371229,
-        "b": 6371229
-    },
-    "features": features
-}
-
-
-with open(OUT_PATH, "w") as f:
-    json.dump(out, f)
-
-
-print(f"Saved {len(features)} borders to {OUT_PATH}")
-print("Done.")
+print("Saved to:", OUTPUT_PATH)
+print("Done.\n")
