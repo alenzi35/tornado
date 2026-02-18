@@ -1,9 +1,7 @@
 name: Process RAP Tornado Data
 
 on:
-  # Run manually if you ever want to
   workflow_dispatch:
-  # Run automatically every hour at :55 UTC
   schedule:
     - cron: "55 * * * *"
 
@@ -21,6 +19,8 @@ jobs:
       # ----------------------------
       - name: Checkout repo
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # ensures full history for push safety
 
       # ----------------------------
       # 2. Setup Python
@@ -75,8 +75,15 @@ jobs:
           git config user.name "github-actions"
           git config user.email "actions@github.com"
 
+          # Pull latest changes first (prevents push rejection)
+          git pull --rebase
+
           git add map/data
 
-          git commit -m "Auto update RAP + LCC borders" || echo "Nothing to commit"
-
-          git push
+          # Only commit if something changed
+          if ! git diff --cached --quiet; then
+            git commit -m "Auto update RAP + LCC borders"
+            git push
+          else
+            echo "Nothing to commit"
+          fi
