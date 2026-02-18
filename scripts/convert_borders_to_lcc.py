@@ -3,12 +3,11 @@ import json
 import os
 from pyproj import CRS
 
-
 # ================= CONFIG =================
 
-SHAPEFILE_PATH = "data/shapefiles/ne_50m_admin_1_states_provinces_lakes.shp"
+# Update to 50m Natural Earth shapefile in your repo
+SHAPEFILE_PATH = "map/data/ne_50m_admin_1_states_provinces_lakes.shp"
 OUTPUT_PATH = "map/data/conus_lcc.json"
-
 
 print("\n=== LOADING STATES SHAPEFILE ===")
 
@@ -16,13 +15,11 @@ states = gpd.read_file(SHAPEFILE_PATH)
 
 print("Total features loaded:", len(states))
 
-
 # ================= FILTER TO USA ONLY =================
 
 states = states[states["admin"] == "United States of America"]
 
 print("US states count:", len(states))
-
 
 # ================= REMOVE NON-CONUS =================
 
@@ -40,20 +37,21 @@ states = states[~states["name"].isin(exclude)]
 
 print("CONUS states count:", len(states))
 
-
 # ================= DISSOLVE TO SINGLE POLYGON =================
 
 print("\n=== DISSOLVING TO CONUS POLYGON ===")
 
-conus = states.dissolve()
+# Use union_all to avoid deprecated unary_union warning
+conus_union = states.geometry.values.union_all()
+conus = gpd.GeoDataFrame(geometry=[conus_union], crs=states.crs)
 
 print("Dissolved geometry type:", conus.geometry.iloc[0].geom_type)
-
 
 # ================= LOAD PROJECTION FROM RAP OUTPUT =================
 
 print("\n=== MATCHING RAP PROJECTION ===")
 
+# Use tornado_prob_lcc.json to match LCC projection
 with open("map/data/tornado_prob_lcc.json") as f:
     rap_data = json.load(f)
 
@@ -72,7 +70,6 @@ lcc_crs = CRS.from_proj4(
 conus = conus.to_crs(lcc_crs)
 
 print("Reprojection complete.")
-
 
 # ================= EXPORT GEOJSON =================
 
