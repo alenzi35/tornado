@@ -1,29 +1,23 @@
-name: Process RAP Tornado Data
+name: Process RAP Data
 
 on:
-  workflow_dispatch:
   schedule:
-    - cron: "55 * * * *"
-
-permissions:
-  contents: write
+    - cron: "55 * * * *"   # Runs at :15 every hour
+  workflow_dispatch:       # Allows manual run
 
 jobs:
-  process_rap:
+  process:
     runs-on: ubuntu-latest
 
     steps:
-
       # ----------------------------
-      # 1. Checkout repo
+      # Checkout repo
       # ----------------------------
-      - name: Checkout repo
+      - name: Checkout repository
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0   # ensures full history for push safety
 
       # ----------------------------
-      # 2. Setup Python
+      # Set up Python
       # ----------------------------
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -31,59 +25,57 @@ jobs:
           python-version: "3.11"
 
       # ----------------------------
-      # 3. Install system + Python deps
+      # Install system dependencies (REQUIRED for GeoPandas)
       # ----------------------------
-      - name: Install dependencies
+      - name: Install system dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            libeccodes-dev \
             gdal-bin \
-            libgdal-dev
+            libgdal-dev \
+            libproj-dev \
+            proj-data \
+            proj-bin
 
-          pip install --upgrade pip
-
+      # ----------------------------
+      # Install Python dependencies
+      # ----------------------------
+      - name: Install Python packages
+        run: |
+          python -m pip install --upgrade pip
           pip install \
-            pygrib \
             numpy \
+            pandas \
             xarray \
+            netCDF4 \
             geopandas \
-            pyproj \
             shapely \
+            pyproj \
             fiona \
             requests
 
       # ----------------------------
-      # 4. Process RAP data
+      # Diagnostics — verify shapefile exists
       # ----------------------------
-      - name: Process RAP data
+      - name: Verify shapefile files
+        run: |
+          echo "Listing map/data contents:"
+          ls -lah map/data/
+
+      # ----------------------------
+      # Run RAP processor
+      # ----------------------------
+      - name: Run RAP processing
         run: |
           python scripts/process_rap.py
 
       # ----------------------------
-      # 5. Convert borders to LCC
+      # Commit updated outputs (if changed)
       # ----------------------------
-      - name: Convert borders to LCC
-        run: |
-          python scripts/convert_borders_to_lcc.py
-
-      # ----------------------------
-      # 6. Commit + push updated files
-      # ----------------------------
-      - name: Commit and push data
+      - name: Commit and push changes
         run: |
           git config user.name "github-actions"
           git config user.email "actions@github.com"
-
-          # Pull latest changes first (prevents push rejection)
-          git pull --rebase
-
-          git add map/data
-
-          # Only commit if something changed
-          if ! git diff --cached --quiet; then
-            git commit -m "Auto update RAP + LCC borders"
-            git push
-          else
-            echo "Nothing to commit"
-          fi
+          git add -A
+          git diff --quiet && git diff --staged --quiet || git commit -m "Automated RAP update"
+          git push
