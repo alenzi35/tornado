@@ -6,7 +6,7 @@ from pyproj import CRS
 
 # ================= CONFIG =================
 
-SHAPEFILE_PATH = "data/shapefiles/ne_10m_admin_1_states_provinces_lakes.shp"
+SHAPEFILE_PATH = "data/shapefiles/ne_50m_admin_1_states_provinces_lakes.shp"
 OUTPUT_PATH = "map/data/conus_lcc.json"
 
 
