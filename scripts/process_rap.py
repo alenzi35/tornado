@@ -1,115 +1,118 @@
 #!/usr/bin/env python3
 import os
 import sys
-import requests
-import pygrib
+import datetime
 import numpy as np
-import xarray as xr
+import pygrib
 import geopandas as gpd
-from shapely.geometry import Point, box
+from shapely.geometry import Point, Polygon
 
-# ----------------------------
+# -----------------------------
 # Paths
-# ----------------------------
+# -----------------------------
 DATA_DIR = "map/data"
-CONUS_SHP = os.path.join(DATA_DIR, "ne_10m_admin_1_states.shp")  # keep all 4 shapefile files together
-TORNADO_JSON = os.path.join(DATA_DIR, "tornado_prob.json")
-TORNADO_LCC_JSON = os.path.join(DATA_DIR, "tornado_prob_lcc.json")
+CONUS_SHP = os.path.join(DATA_DIR, "ne_50m_admin_1_states_provinces_lakes.shp")
+OUTPUT_CELLS = os.path.join(DATA_DIR, "tornado_prob_lcc.json")
+OUTPUT_BORDERS = os.path.join(DATA_DIR, "borders_lcc.json")
 
-# ----------------------------
-# Target cycle
-# ----------------------------
-TARGET_CYCLE = "20260218"
-TARGET_HOUR = "21"
-FORECAST_FHOUR = "01"
-
-# Example RAP URL
-RAP_URL = f"https://noaa-rap-pds.s3.amazonaws.com/rap.{TARGET_CYCLE}/rap.t{TARGET_HOUR}z.awip32f{FORECAST_FHOUR}.grib2"
-
-# ----------------------------
-# Diagnostics
-# ----------------------------
+# -----------------------------
+# Target RAP cycle
+# -----------------------------
+target_date = datetime.datetime.utcnow()
+target_cycle = f"{target_date:%Y%m%d} {target_date.hour:02d} F01"
 print("=== TARGET CYCLE ===")
-print(f"Using: {TARGET_CYCLE} {TARGET_HOUR} F{FORECAST_FHOUR}")
-print(f"URL: {RAP_URL}")
+print("Using:", target_cycle)
 
-# ----------------------------
-# Download RAP
-# ----------------------------
-response = requests.get(RAP_URL)
-if response.status_code != 200:
-    print("RAP unavailable, exiting.")
-    sys.exit(1)
+# -----------------------------
+# Download RAP GRIB
+# -----------------------------
+rap_url = f"https://noaa-rap-pds.s3.amazonaws.com/rap.{target_date:%Y%m%d}/rap.t{target_date.hour:02d}z.awip32f01.grib2"
+print("URL:", rap_url)
+print("RAP available. Downloading...")
 
-with open("temp.grib2", "wb") as f:
-    f.write(response.content)
-
+grib_file = os.path.join(DATA_DIR, "rap.grib2")
+os.system(f"wget -O {grib_file} {rap_url} -q --show-progress")
 print("RAP downloaded.")
 
-# ----------------------------
+# -----------------------------
 # Read GRIB
-# ----------------------------
-grbs = pygrib.open("temp.grib2")
-
-# Example: extract max 3s wind gust probability (replace with your variable)
-grb = grbs[1]  # adjust index for the variable
+# -----------------------------
+print("=== READING GRIB ===")
+grbs = pygrib.open(grib_file)
+grb = grbs[1]  # Example: first field
+data = grb.values
 lats, lons = grb.latlons()
-values = grb.values
-
 print("GRIB loaded.")
-print(f"Grid shape: {values.shape}")
+print("Grid shape:", data.shape)
 
-# ----------------------------
+# -----------------------------
 # Load CONUS outline
-# ----------------------------
+# -----------------------------
 print("=== LOADING CONUS OUTLINE ===")
 states = gpd.read_file(CONUS_SHP)
+print("States loaded:", len(states))
 
-# Filter for CONUS only
-conus_states = states[~states['name'].isin(['Alaska', 'Hawaii', 'Puerto Rico'])]
-conus = conus_states.dissolve()  # merge all geometries into one
+# Filter to CONUS states
+conus_states = [
+    "Alabama","Arizona","Arkansas","California","Colorado","Connecticut",
+    "Delaware","Florida","Georgia","Idaho","Illinois","Indiana","Iowa",
+    "Kansas","Kentucky","Louisiana","Maine","Maryland","Massachusetts",
+    "Michigan","Minnesota","Mississippi","Missouri","Montana","Nebraska",
+    "Nevada","New Hampshire","New Jersey","New Mexico","New York",
+    "North Carolina","North Dakota","Ohio","Oklahoma","Oregon","Pennsylvania",
+    "Rhode Island","South Carolina","South Dakota","Tennessee","Texas",
+    "Utah","Vermont","Virginia","Washington","West Virginia","Wisconsin","Wyoming"
+]
 
-print("CONUS outline loaded.")
-print(f"CONUS bounds: {conus.total_bounds}")
+conus = states[states['name'].isin(conus_states)]
+print("CONUS states filtered:", len(conus))
 
-# ----------------------------
-# Create cell points & filter by CONUS
-# ----------------------------
-ny, nx = values.shape
+# -----------------------------
+# Prepare cell polygons
+# -----------------------------
+print("=== FILTERING CELLS INSIDE CONUS ===")
 cells = []
 
-for j in range(ny):
-    for i in range(nx):
-        val = float(values[j, i])
-        if np.isnan(val):
-            continue
-        point = Point(lons[j, i], lats[j, i])
-        if conus.geometry.iloc[0].contains(point) or conus.geometry.iloc[0].touches(point):
+ny, nx = data.shape
+for i in range(ny):
+    for j in range(nx):
+        lat = lats[i,j]
+        lon = lons[i,j]
+        point = Point(lon, lat)
+        if any(poly.contains(point) for poly in conus.geometry):
             cells.append({
-                "x": float(lons[j, i]),
-                "y": float(lats[j, i]),
-                "prob": val
+                "x": lon,
+                "y": lat,
+                "prob": float(data[i,j]),
+                "dx": float(lons[0,1]-lons[0,0]),
+                "dy": float(lats[1,0]-lats[0,0])
             })
 
-print(f"Total cells inside CONUS: {len(cells)}")
+print("Total cells inside CONUS:", len(cells))
 
-# ----------------------------
-# Save as JSON
-# ----------------------------
+# -----------------------------
+# Save output
+# -----------------------------
 import json
-
-with open(TORNADO_JSON, "w") as f:
+with open(OUTPUT_CELLS, "w") as f:
     json.dump({"features": cells}, f)
 
-print(f"Tornado probabilities saved to {TORNADO_JSON}")
+print("Saved tornado_prob_lcc.json.")
 
-# ----------------------------
-# Convert to LCC (dummy example, adjust your conversion)
-# ----------------------------
-# Here we would normally call your LCC conversion logic
-# For example, if you have convert_to_lcc(cells), you can loop over cells
-# For now just copy the same JSON to LCC version
-with open(TORNADO_LCC_JSON, "w") as f:
-    json.dump({"features": cells}, f)
+# -----------------------------
+# Generate simple border outlines
+# -----------------------------
+print("=== GENERATING BORDERS ===")
+borders = []
+for geom in conus.geometry:
+    if geom.type == "Polygon":
+        borders.append(list(geom.exterior.coords))
+    elif geom.type == "MultiPolygon":
+        for poly in geom.geoms:
+            borders.append(list(poly.exterior.coords))
 
-print(f"LCC tornado probabilities saved to {TORNADO_LCC_JSON}")
+with open(OUTPUT_BORDERS, "w") as f:
+    json.dump({"features": borders}, f)
+
+print("Saved borders_lcc.json.")
+print("Process complete.")
