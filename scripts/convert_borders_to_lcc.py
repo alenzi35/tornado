@@ -2,24 +2,32 @@ import geopandas as gpd
 import json
 import os
 from pyproj import CRS
+from shapely.geometry import box
+
 
 # ================= CONFIG =================
 
-# Update to 50m Natural Earth shapefile in your repo
-SHAPEFILE_PATH = "map/data/ne_50m_admin_1_states_provinces_lakes.shp"
+SHAPEFILE_PATH = "map/data/ne_50m_admin_1_states_provinces.shp"
 OUTPUT_PATH = "map/data/conus_lcc.json"
+
+RAP_JSON = "map/data/tornado_prob_lcc.json"
+
+
+# ================= LOAD STATES =================
 
 print("\n=== LOADING STATES SHAPEFILE ===")
 
 states = gpd.read_file(SHAPEFILE_PATH)
 
-print("Total features loaded:", len(states))
+print("Loaded features:", len(states))
 
-# ================= FILTER TO USA ONLY =================
+
+# ================= FILTER USA =================
 
 states = states[states["admin"] == "United States of America"]
 
-print("US states count:", len(states))
+print("US features:", len(states))
+
 
 # ================= REMOVE NON-CONUS =================
 
@@ -35,49 +43,82 @@ exclude = [
 
 states = states[~states["name"].isin(exclude)]
 
-print("CONUS states count:", len(states))
+print("After exclusion:", len(states))
 
-# ================= DISSOLVE TO SINGLE POLYGON =================
 
-print("\n=== DISSOLVING TO CONUS POLYGON ===")
+# ================= FIX INVALID GEOMETRY =================
 
-# Use union_all to avoid deprecated unary_union warning
-conus_union = states.geometry.values.union_all()
-conus = gpd.GeoDataFrame(geometry=[conus_union], crs=states.crs)
+print("\n=== FIXING GEOMETRY ===")
 
-print("Dissolved geometry type:", conus.geometry.iloc[0].geom_type)
+states["geometry"] = states["geometry"].buffer(0)
 
-# ================= LOAD PROJECTION FROM RAP OUTPUT =================
+print("Geometry fixed.")
 
-print("\n=== MATCHING RAP PROJECTION ===")
 
-# Use tornado_prob_lcc.json to match LCC projection
-with open("map/data/tornado_prob_lcc.json") as f:
-    rap_data = json.load(f)
+# ================= DISSOLVE INTO SINGLE CONUS =================
 
-proj_params = rap_data["projection"]
+print("\n=== DISSOLVING STATES ===")
 
-lcc_crs = CRS.from_proj4(
+conus = states.dissolve()
+
+print("Dissolved.")
+
+
+# ================= HARD CLIP TO CONUS BOUNDING BOX =================
+
+print("\n=== CLIPPING TO CONUS BOUNDS ===")
+
+# lat/lon bounding box for continental US
+bbox = box(-125, 24, -66.5, 50)
+
+# ensure CRS is WGS84 first
+conus = conus.to_crs(epsg=4326)
+
+conus["geometry"] = conus["geometry"].intersection(bbox)
+
+print("Clipped.")
+
+
+# ================= LOAD RAP PROJECTION =================
+
+print("\n=== LOADING RAP PROJECTION ===")
+
+with open(RAP_JSON) as f:
+    rap = json.load(f)
+
+params = rap["projection"]
+
+
+lcc = CRS.from_proj4(
     f"+proj=lcc "
-    f"+lat_1={proj_params['lat_1']} "
-    f"+lat_2={proj_params['lat_2']} "
-    f"+lat_0={proj_params['lat_0']} "
-    f"+lon_0={proj_params['lon_0']} "
-    f"+a={proj_params.get('a', 6371229)} "
-    f"+b={proj_params.get('b', 6371229)}"
+    f"+lat_1={params['lat_1']} "
+    f"+lat_2={params['lat_2']} "
+    f"+lat_0={params['lat_0']} "
+    f"+lon_0={params['lon_0']} "
+    f"+a={params.get('a', 6371229)} "
+    f"+b={params.get('b', 6371229)}"
 )
 
-conus = conus.to_crs(lcc_crs)
 
-print("Reprojection complete.")
+# ================= REPROJECT =================
 
-# ================= EXPORT GEOJSON =================
+print("\n=== REPROJECTING TO LCC ===")
 
-print("\n=== EXPORTING CONUS LCC OUTLINE ===")
+conus = conus.to_crs(lcc)
+
+print("Reprojected.")
+
+
+# ================= SAVE =================
+
+print("\n=== SAVING ===")
 
 os.makedirs("map/data", exist_ok=True)
 
-conus.to_file(OUTPUT_PATH, driver="GeoJSON")
+conus.to_file(
+    OUTPUT_PATH,
+    driver="GeoJSON"
+)
 
-print("Saved to:", OUTPUT_PATH)
-print("Done.\n")
+print("Saved:", OUTPUT_PATH)
+print("\nSUCCESS\n")
