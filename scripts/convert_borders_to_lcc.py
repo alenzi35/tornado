@@ -2,13 +2,14 @@
 """
 convert_borders_to_lcc.py
 
-Robust version for GitHub Actions:
-- Downloads Natural Earth borders
-- Filters to CONUS USA (lower 48)
+Fixed robust version:
+- Downloads Natural Earth country + state lines
+- Filters country to USA
+- Clips state lines to CONUS
 - Preserves Great Lakes
 - Combines country + state borders
-- Projects to Lambert Conformal Conic
-- Outputs JSON
+- Projects to LCC
+- Exports JSON for map
 """
 
 import geopandas as gpd
@@ -51,10 +52,10 @@ def download_shapefile(url, folder):
     return gpd.read_file(shp_file)
 
 
-def filter_usa(df):
+def filter_country_usa(df):
     """
-    Filter a GeoDataFrame to United States rows.
-    Uses 'ADMIN' column, case-insensitive substring match.
+    Filter country polygons to USA.
+    Uses 'ADMIN' column.
     """
     if "ADMIN" not in df.columns:
         raise RuntimeError(f"'ADMIN' column not found in {df.columns}")
@@ -62,11 +63,17 @@ def filter_usa(df):
 
 
 def clip_conus(df):
+    """
+    Clip GeoDataFrame to CONUS bbox
+    """
     return df.cx[CONUS_BBOX["min_lon"]:CONUS_BBOX["max_lon"],
                  CONUS_BBOX["min_lat"]:CONUS_BBOX["max_lat"]]
 
 
 def extract_coords(combined_gdf):
+    """
+    Convert LineString / MultiLineString geometries to list of coordinates
+    """
     features = []
     for geom in combined_gdf.geometry:
         if geom is None:
@@ -80,16 +87,14 @@ def extract_coords(combined_gdf):
 
 
 def main():
-    # Download datasets
+    # Download country + state shapefiles
     countries = download_shapefile(COUNTRY_URL, "tmp_countries")
     states = download_shapefile(STATE_LINES_URL, "tmp_states")
 
-    # Filter to USA
-    countries = filter_usa(countries)
-    states = filter_usa(states)
+    # Filter country polygons to USA only
+    countries = filter_country_usa(countries)
 
-    # Clip to CONUS bounding box
-    countries = clip_conus(countries)
+    # Clip state lines to CONUS (lower 48)
     states = clip_conus(states)
 
     # Convert country polygons to boundary lines
