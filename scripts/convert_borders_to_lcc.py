@@ -2,28 +2,36 @@
 """
 convert_borders_to_lcc.py
 
-Fixed robust version:
-- Downloads Natural Earth country + state lines
-- Filters country to USA
-- Clips state lines to CONUS
-- Preserves Great Lakes
-- Combines country + state borders
-- Projects to LCC
-- Exports JSON for map
+Download and process US Census TIGER national polygon
+Clips to CONUS, keeps Great Lakes as holes,
+projects to Lambert Conformal Conic, outputs JSON
 """
 
 import geopandas as gpd
 import requests
 import zipfile
 import io
-from pathlib import Path
 import json
+from pathlib import Path
 
+# Output JSON
 OUT_PATH = Path("map/data/borders_lcc.json")
 
-COUNTRY_URL = "https://naturalearth.s3.amazonaws.com/50m_cultural/ne_50m_admin_0_countries.zip"
-STATE_LINES_URL = "https://naturalearth.s3.amazonaws.com/50m_cultural/ne_50m_admin_1_states_provinces_lines.zip"
+# TIGER nation shapefile (2023, generalized 20m)
+TIGER_URL = (
+    "https://www2.census.gov/geo/tiger/GENZ2023/shp/"
+    "cb_2023_us_nation_20m.shp.zip"
+)
 
+# CONUS bbox (lon/lat)
+CONUS_BBOX = {
+    "min_lon": -125,
+    "max_lon": -66,
+    "min_lat": 24,
+    "max_lat": 50,
+}
+
+# RAP Lambert Conformal Conic (same as your map)
 LCC_PROJ4 = (
     "+proj=lcc "
     "+lat_1=33 +lat_2=45 +lat_0=39 "
@@ -32,90 +40,62 @@ LCC_PROJ4 = (
     "+datum=WGS84 +units=m +no_defs"
 )
 
-CONUS_BBOX = {
-    "min_lon": -125,
-    "max_lon": -66,
-    "min_lat": 24,
-    "max_lat": 50
-}
-
 
 def download_shapefile(url, folder):
+    """Download and unzip a shapefile, return a GeoDataFrame."""
     print(f"Downloading {url}")
     resp = requests.get(url)
     resp.raise_for_status()
+
     z = zipfile.ZipFile(io.BytesIO(resp.content))
     extract_dir = Path(folder)
     extract_dir.mkdir(parents=True, exist_ok=True)
     z.extractall(extract_dir)
+
     shp_file = next(extract_dir.glob("*.shp"))
+    print("Loaded:", shp_file)
     return gpd.read_file(shp_file)
 
 
-def filter_country_usa(df):
-    """
-    Filter country polygons to USA.
-    Uses 'ADMIN' column.
-    """
-    if "ADMIN" not in df.columns:
-        raise RuntimeError(f"'ADMIN' column not found in {df.columns}")
-    return df[df["ADMIN"].str.contains("United States", case=False, na=False)]
+def main():
 
+    # 1) Download TIGER nation polygon
+    nation = download_shapefile(TIGER_URL, "tmp_tiger")
 
-def clip_conus(df):
-    """
-    Clip GeoDataFrame to CONUS bbox
-    """
-    return df.cx[CONUS_BBOX["min_lon"]:CONUS_BBOX["max_lon"],
-                 CONUS_BBOX["min_lat"]:CONUS_BBOX["max_lat"]]
+    # 2) Clip to CONUS bbox
+    nation_conus = nation.cx[
+        CONUS_BBOX["min_lon"]:CONUS_BBOX["max_lon"],
+        CONUS_BBOX["min_lat"]:CONUS_BBOX["max_lat"],
+    ]
 
+    # 3) Reproject to LCC
+    nation_lcc = nation_conus.to_crs(LCC_PROJ4)
 
-def extract_coords(combined_gdf):
-    """
-    Convert LineString / MultiLineString geometries to list of coordinates
-    """
+    # 4) Extract polygons with holes (lake holes preserved)
     features = []
-    for geom in combined_gdf.geometry:
+
+    for geom in nation_lcc.geometry:
+
         if geom is None:
             continue
-        if geom.type == "LineString":
-            features.append(list(geom.coords))
-        elif geom.type == "MultiLineString":
-            for line in geom.geoms:
-                features.append(list(line.coords))
-    return features
 
+        # Polygons can have holes
+        if geom.geom_type == "MultiPolygon":
+            for poly in geom.geoms:
+                # exterior
+                features.append(list(poly.exterior.coords))
+                # holes (interiors)
+                for interior in poly.interiors:
+                    features.append(list(interior.coords))
 
-def main():
-    # Download country + state shapefiles
-    countries = download_shapefile(COUNTRY_URL, "tmp_countries")
-    states = download_shapefile(STATE_LINES_URL, "tmp_states")
+        elif geom.geom_type == "Polygon":
+            features.append(list(geom.exterior.coords))
+            for interior in geom.interiors:
+                features.append(list(interior.coords))
 
-    # Filter country polygons to USA only
-    countries = filter_country_usa(countries)
-
-    # Clip state lines to CONUS (lower 48)
-    states = clip_conus(states)
-
-    # Convert country polygons to boundary lines
-    country_borders = countries.boundary
-
-    # Combine country + state lines
-    combined = gpd.GeoDataFrame(
-        geometry=list(country_borders.geometry) + list(states.geometry),
-        crs="EPSG:4326"
-    )
-
-    # Project to LCC
-    combined = combined.to_crs(LCC_PROJ4)
-
-    # Extract coordinates
-    features = extract_coords(combined)
-
-    # Ensure output directory exists
+    # 5) Write JSON
     OUT_PATH.parent.mkdir(parents=True, exist_ok=True)
 
-    # Save JSON
     out = {
         "projection": {
             "proj": "lcc",
@@ -126,15 +106,15 @@ def main():
             "x_0": 0,
             "y_0": 0,
             "datum": "WGS84",
-            "units": "m"
+            "units": "m",
         },
-        "features": features
+        "features": features,
     }
 
     with open(OUT_PATH, "w") as f:
         json.dump(out, f)
 
-    print(f"Saved {len(features)} border lines to {OUT_PATH}")
+    print(f"Saved {len(features)} polygons (outline + holes) to {OUT_PATH}")
 
 
 if __name__ == "__main__":
