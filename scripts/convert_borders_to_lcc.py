@@ -2,13 +2,14 @@
 """
 convert_borders_to_lcc.py
 
-Robust version for GitHub Actions:
-- Downloads Natural Earth borders
-- Filters to CONUS USA (lower 48)
+Fully robust version:
+- Downloads Natural Earth country + state lines
+- Automatically detects USA column
+- Filters to CONUS (lower 48)
 - Preserves Great Lakes
-- Combines country + state lines
+- Combines country + state borders
 - Projects to Lambert Conformal Conic
-- Exports JSON
+- Outputs JSON for your map
 """
 
 import geopandas as gpd
@@ -51,19 +52,18 @@ def download_shapefile(url, folder):
     return gpd.read_file(shp_file)
 
 
-def filter_usa(df):
+def find_usa_column(df):
     """
-    Robustly filter a dataframe to United States using any common column.
+    Automatically detect which column contains 'United States' text.
     """
-    possible_cols = ["adm0_name", "admin", "adm0_a3"]
-    usa_col = None
-    for col in possible_cols:
-        if col in df.columns:
-            usa_col = col
-            break
-    if usa_col is None:
-        raise RuntimeError(f"No suitable country column found in {df.columns}")
-    return df[df[usa_col].isin(["United States of America", "USA"])]
+    for col in df.columns:
+        if df[col].dtype == object:
+            try:
+                if df[col].str.contains("United States").any():
+                    return col
+            except Exception:
+                continue
+    raise RuntimeError(f"No column contains 'United States' in {df.columns}")
 
 
 def clip_conus(df):
@@ -89,15 +89,18 @@ def main():
     countries = download_shapefile(COUNTRY_URL, "tmp_countries")
     states = download_shapefile(STATE_LINES_URL, "tmp_states")
 
-    # Filter to USA robustly
-    countries = filter_usa(countries)
-    states = filter_usa(states)
+    # Robust USA filtering
+    usa_col_country = find_usa_column(countries)
+    countries = countries[countries[usa_col_country].str.contains("United States")]
+
+    usa_col_states = find_usa_column(states)
+    states = states[states[usa_col_states].str.contains("United States")]
 
     # Clip to CONUS bounding box
     countries = clip_conus(countries)
     states = clip_conus(states)
 
-    # Convert country polygon to boundary lines
+    # Convert country polygons to boundary lines
     country_borders = countries.boundary
 
     # Combine country + state lines
