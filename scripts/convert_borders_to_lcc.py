@@ -1,136 +1,136 @@
 import geopandas as gpd
+import requests
+import zipfile
+import io
 import json
-import os
 from pyproj import CRS
-from shapely.validation import make_valid
 
 
-# ================= PATH SETUP =================
+# =============================
+# Paths
+# =============================
 
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-REPO_ROOT = os.path.abspath(os.path.join(SCRIPT_DIR, ".."))
+OUT_PATH = "map/data/borders_lcc.json"
 
-SHAPEFILE_PATH = os.path.join(
-    REPO_ROOT,
-    "map",
-    "data",
-    "ne_50m_admin_1_states_provinces.shp"
-)
-
-OUTPUT_PATH = os.path.join(
-    REPO_ROOT,
-    "map",
-    "data",
-    "conus_lcc.json"
-)
-
-RAP_JSON_PATH = os.path.join(
-    REPO_ROOT,
-    "map",
-    "data",
-    "tornado_prob_lcc.json"
-)
+LAND_URL = "https://naturalearth.s3.amazonaws.com/50m_physical/ne_50m_land.zip"
 
 
-print("\n=== VERIFYING SHAPEFILE ===")
-print("Path:", SHAPEFILE_PATH)
+# =============================
+# Download + unzip shapefile
+# =============================
 
-if not os.path.exists(SHAPEFILE_PATH):
-    raise RuntimeError("Shapefile NOT FOUND")
+print("Downloading Natural Earth land polygons...")
 
-print("Shapefile found.")
+resp = requests.get(LAND_URL)
+resp.raise_for_status()
 
+z = zipfile.ZipFile(io.BytesIO(resp.content))
+z.extractall("tmp_land")
 
-# ================= LOAD =================
-
-print("\n=== LOADING STATES ===")
-
-states = gpd.read_file(SHAPEFILE_PATH)
-
-print("Total features:", len(states))
+print("Download complete.")
 
 
-# ================= FILTER USA =================
+# =============================
+# Load shapefile
+# =============================
 
-states = states[states["admin"] == "United States of America"]
+shp_path = "tmp_land/ne_50m_land.shp"
 
-print("US features:", len(states))
+print("Loading shapefile...")
 
-
-# ================= REMOVE NON-CONUS =================
-
-exclude = [
-    "Alaska",
-    "Hawaii",
-    "Puerto Rico",
-    "Guam",
-    "American Samoa",
-    "Northern Mariana Islands",
-    "United States Virgin Islands"
-]
-
-states = states[~states["name"].isin(exclude)]
-
-print("CONUS features:", len(states))
+gdf = gpd.read_file(shp_path)
 
 
-# ================= FIX GEOMETRY =================
+# =============================
+# Optional: Filter roughly to North America / CONUS region
+# (reduces file size, speeds rendering)
+# =============================
 
-print("\n=== FIXING GEOMETRY ===")
+print("Filtering to CONUS region...")
 
-states["geometry"] = states["geometry"].apply(make_valid)
+# Bounding box in lat/lon
+min_lon = -130
+max_lon = -60
+min_lat = 20
+max_lat = 55
 
-
-# ================= DISSOLVE =================
-
-print("\n=== DISSOLVING ===")
-
-conus = states.dissolve()
-
-print("Result type:", conus.geometry.iloc[0].geom_type)
-
-
-# ================= LOAD RAP PROJECTION =================
-
-print("\n=== LOADING RAP PROJECTION ===")
-
-if not os.path.exists(RAP_JSON_PATH):
-    raise RuntimeError("tornado_prob_lcc.json missing")
-
-with open(RAP_JSON_PATH) as f:
-    rap = json.load(f)
-
-params = rap["projection"]
+gdf = gdf.cx[min_lon:max_lon, min_lat:max_lat]
 
 
-# ================= CREATE LCC CRS =================
+# =============================
+# Build RAP LCC projection
+# =============================
 
-lcc = CRS.from_proj4(
-    f"+proj=lcc "
-    f"+lat_1={params['lat_1']} "
-    f"+lat_2={params['lat_2']} "
-    f"+lat_0={params['lat_0']} "
-    f"+lon_0={params['lon_0']} "
-    f"+a={params.get('a',6371229)} "
-    f"+b={params.get('b',6371229)}"
+print("Building LCC projection...")
+
+lcc_proj = CRS.from_proj4(
+    "+proj=lcc "
+    "+lat_1=50 "
+    "+lat_2=50 "
+    "+lat_0=50 "
+    "+lon_0=253 "
+    "+a=6371229 "
+    "+b=6371229 "
+    "+units=m "
+    "+no_defs"
 )
 
 
-# ================= REPROJECT =================
+# =============================
+# Reproject
+# =============================
 
-print("\n=== REPROJECTING ===")
+print("Reprojecting...")
 
-conus = conus.to_crs(lcc)
+gdf_lcc = gdf.to_crs(lcc_proj)
 
 
-# ================= SAVE =================
+# =============================
+# Export to JSON
+# =============================
 
-print("\n=== SAVING ===")
+print("Exporting JSON...")
 
-os.makedirs(os.path.dirname(OUTPUT_PATH), exist_ok=True)
+features = []
 
-conus.to_file(OUTPUT_PATH, driver="GeoJSON")
+for geom in gdf_lcc.geometry:
 
-print("Saved:", OUTPUT_PATH)
+    if geom is None:
+        continue
 
-print("\nSUCCESS\n")
+    if geom.geom_type == "MultiPolygon":
+
+        for poly in geom.geoms:
+
+            coords = list(poly.exterior.coords)
+
+            features.append(coords)
+
+    elif geom.geom_type == "Polygon":
+
+        coords = list(geom.exterior.coords)
+
+        features.append(coords)
+
+
+out = {
+    "projection": {
+        "proj": "lcc",
+        "lat_0": 50,
+        "lat_1": 50,
+        "lat_2": 50,
+        "lon_0": 253,
+        "a": 6371229,
+        "b": 6371229
+    },
+    "features": features
+}
+
+
+with open(OUT_PATH, "w") as f:
+
+    json.dump(out, f)
+
+
+print(f"Saved {len(features)} land border polygons to {OUT_PATH}")
+print("Done.")
