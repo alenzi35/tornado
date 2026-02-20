@@ -12,56 +12,83 @@ from pyproj import CRS
 
 OUT_PATH = "map/data/borders_lcc.json"
 
-LAND_URL = "https://naturalearth.s3.amazonaws.com/50m_physical/ne_50m_land.zip"
+COUNTRIES_URL = "https://naturalearth.s3.amazonaws.com/50m_cultural/ne_50m_admin_0_countries.zip"
+
+STATE_LINES_URL = "https://naturalearth.s3.amazonaws.com/50m_cultural/ne_50m_admin_1_states_provinces_lines.zip"
 
 
 # =============================
-# Download + unzip shapefile
+# Helper: download shapefile
 # =============================
 
-print("Downloading Natural Earth land polygons...")
+def download_shapefile(url, folder):
 
-resp = requests.get(LAND_URL)
-resp.raise_for_status()
+    print(f"Downloading {url}")
 
-z = zipfile.ZipFile(io.BytesIO(resp.content))
-z.extractall("tmp_land")
+    resp = requests.get(url)
+    resp.raise_for_status()
 
-print("Download complete.")
+    z = zipfile.ZipFile(io.BytesIO(resp.content))
+    z.extractall(folder)
 
+    shp = [f for f in z.namelist() if f.endswith(".shp")][0]
 
-# =============================
-# Load shapefile
-# =============================
-
-shp_path = "tmp_land/ne_50m_land.shp"
-
-print("Loading shapefile...")
-
-gdf = gpd.read_file(shp_path)
+    return gpd.read_file(f"{folder}/{shp}")
 
 
 # =============================
-# Optional: Filter roughly to North America / CONUS region
-# (reduces file size, speeds rendering)
+# Load datasets
 # =============================
 
-print("Filtering to CONUS region...")
+countries = download_shapefile(
+    COUNTRIES_URL,
+    "tmp_countries"
+)
 
-# Bounding box in lat/lon
-min_lon = -130
-max_lon = -60
-min_lat = 20
-max_lat = 55
+state_lines = download_shapefile(
+    STATE_LINES_URL,
+    "tmp_states"
+)
 
-gdf = gdf.cx[min_lon:max_lon, min_lat:max_lat]
+
+# =============================
+# Filter country = USA
+# =============================
+
+usa = countries[
+    countries["ADMIN"] == "United States of America"
+]
+
+
+# =============================
+# Remove Alaska, Hawaii, territories
+# via bounding box filter (CONUS)
+# =============================
+
+min_lon = -125
+max_lon = -66
+min_lat = 24
+max_lat = 50
+
+usa = usa.cx[min_lon:max_lon, min_lat:max_lat]
+
+
+# =============================
+# Filter state borders to USA only
+# =============================
+
+states = state_lines[
+    state_lines["adm0_name"] == "United States of America"
+]
+
+states = states.cx[min_lon:max_lon, min_lat:max_lat]
 
 
 # =============================
 # Build RAP LCC projection
 # =============================
 
-print("Building LCC projection...")
+print("Building projection...")
 
 lcc_proj = CRS.from_proj4(
     "+proj=lcc "
@@ -82,36 +109,56 @@ lcc_proj = CRS.from_proj4(
 
 print("Reprojecting...")
 
-gdf_lcc = gdf.to_crs(lcc_proj)
+usa_lcc = usa.to_crs(lcc_proj)
+states_lcc = states.to_crs(lcc_proj)
 
 
 # =============================
-# Export to JSON
+# Convert geometries to lines
 # =============================
-
-print("Exporting JSON...")
 
 features = []
 
-for geom in gdf_lcc.geometry:
 
-    if geom is None:
-        continue
+# Country outline (exterior only)
+for geom in usa_lcc.geometry:
 
     if geom.geom_type == "MultiPolygon":
 
         for poly in geom.geoms:
 
-            coords = list(poly.exterior.coords)
-
-            features.append(coords)
+            features.append(
+                list(poly.exterior.coords)
+            )
 
     elif geom.geom_type == "Polygon":
 
-        coords = list(geom.exterior.coords)
+        features.append(
+            list(geom.exterior.coords)
+        )
 
-        features.append(coords)
 
+# State borders (lines)
+for geom in states_lcc.geometry:
+
+    if geom.geom_type == "MultiLineString":
+
+        for line in geom.geoms:
+
+            features.append(
+                list(line.coords)
+            )
+
+    elif geom.geom_type == "LineString":
+
+        features.append(
+            list(geom.coords)
+        )
+
+
+# =============================
+# Output JSON
+# =============================
 
 out = {
     "projection": {
@@ -132,5 +179,5 @@ with open(OUT_PATH, "w") as f:
     json.dump(out, f)
 
 
-print(f"Saved {len(features)} land border polygons to {OUT_PATH}")
+print(f"Saved {len(features)} border lines.")
 print("Done.")
