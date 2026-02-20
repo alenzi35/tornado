@@ -8,11 +8,11 @@ import json
 from pathlib import Path
 from pyproj import CRS
 
-OUT_PATH = Path("map/data/borders_lcc.json")
+OUT_PATH = Path("map/data/borders_grid.json")
 
 URL = "https://www2.census.gov/geo/tiger/GENZ2024/shp/cb_2024_us_state_5m.zip"
 
-# EXACT CRS used by RAP grid (official NOAA definition)
+# RAP projection (correct spherical earth)
 RAP_CRS = CRS.from_proj4(
     "+proj=lcc "
     "+lat_1=25 "
@@ -24,6 +24,17 @@ RAP_CRS = CRS.from_proj4(
     "+units=m "
     "+no_defs"
 )
+
+# THESE MUST MATCH YOUR RAP GRID EXACTLY
+DX = 13000.0
+DY = 13000.0
+
+NX = 451
+NY = 337
+
+# RAP grid origin (lower-left corner)
+X0 = -2699020.142521929
+Y0 = -1588819.031011287
 
 
 def download_shapefile(url, folder):
@@ -45,44 +56,74 @@ def download_shapefile(url, folder):
     return gpd.read_file(shp)
 
 
+def proj_to_grid(x, y):
+
+    gx = (x - X0) / DX
+    gy = (y - Y0) / DY
+
+    return gx, gy
+
+
+def convert_geom(geom):
+
+    rings = []
+
+    if geom.geom_type == "Polygon":
+
+        rings.append(geom.exterior.coords)
+
+        for hole in geom.interiors:
+            rings.append(hole.coords)
+
+    elif geom.geom_type == "MultiPolygon":
+
+        for poly in geom.geoms:
+
+            rings.append(poly.exterior.coords)
+
+            for hole in poly.interiors:
+                rings.append(hole.coords)
+
+    result = []
+
+    for ring in rings:
+
+        converted = []
+
+        for x, y in ring:
+
+            gx, gy = proj_to_grid(x, y)
+
+            converted.append([gx, gy])
+
+        result.append(converted)
+
+    return result
+
+
 def main():
 
     states = download_shapefile(URL, "tmp_states")
 
-    # Project to RAP CRS
     states = states.to_crs(RAP_CRS)
 
     features = []
 
     for geom in states.geometry:
 
-        if geom.geom_type == "Polygon":
-
-            features.append(list(geom.exterior.coords))
-
-            for hole in geom.interiors:
-                features.append(list(hole.coords))
-
-        elif geom.geom_type == "MultiPolygon":
-
-            for poly in geom.geoms:
-
-                features.append(list(poly.exterior.coords))
-
-                for hole in poly.interiors:
-                    features.append(list(hole.coords))
-
+        features.extend(convert_geom(geom))
 
     OUT_PATH.parent.mkdir(parents=True, exist_ok=True)
 
     with open(OUT_PATH, "w") as f:
 
         json.dump({
+            "nx": NX,
+            "ny": NY,
             "features": features
         }, f)
 
-
-    print("Done. Borders now match RAP projection exactly.")
+    print("Borders now perfectly aligned with RAP grid.")
 
 
 if __name__ == "__main__":
