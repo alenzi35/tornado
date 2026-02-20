@@ -74,18 +74,18 @@ usa = usa.cx[min_lon:max_lon, min_lat:max_lat]
 
 
 # =============================
-# Filter state borders (correct column = admin)
+# Filter state borders using ISO code
 # =============================
 
 states = state_lines[
-    state_lines["admin"] == "United States of America"
+    state_lines["adm0_a3"] == "USA"
 ]
 
 states = states.cx[min_lon:max_lon, min_lat:max_lat]
 
 
 # =============================
-# RAP projection
+# Build RAP LCC projection
 # =============================
 
 print("Building projection...")
@@ -127,33 +127,25 @@ for geom in usa_lcc.geometry:
 
         for poly in geom.geoms:
 
-            features.append(
-                list(poly.exterior.coords)
-            )
+            features.append(list(poly.exterior.coords))
 
     elif geom.geom_type == "Polygon":
 
-        features.append(
-            list(geom.exterior.coords)
-        )
+        features.append(list(geom.exterior.coords))
 
 
-# State lines
+# State borders
 for geom in states_lcc.geometry:
 
     if geom.geom_type == "MultiLineString":
 
         for line in geom.geoms:
 
-            features.append(
-                list(line.coords)
-            )
+            features.append(list(line.coords))
 
     elif geom.geom_type == "LineString":
 
-        features.append(
-            list(geom.coords)
-        )
+        features.append(list(geom.coords))
 
 
 # =============================
@@ -173,9 +165,7 @@ out = {
     "features": features
 }
 
-
 with open(OUT_PATH, "w") as f:
-
     json.dump(out, f)
 
 
