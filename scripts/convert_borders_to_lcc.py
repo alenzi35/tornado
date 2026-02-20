@@ -2,9 +2,9 @@
 """
 convert_borders_to_lcc.py
 
-Download and process US Census TIGER national polygon
-Clips to CONUS, keeps Great Lakes as holes,
-projects to Lambert Conformal Conic, outputs JSON
+Download and process US Cartographic Boundary (5m) polygon.
+Keeps Great Lakes as holes, projects to Lambert Conformal Conic,
+outputs JSON for map rendering.
 """
 
 import geopandas as gpd
@@ -14,24 +14,19 @@ import io
 import json
 from pathlib import Path
 
-# Output JSON
+# -----------------------------
+# Output path
+# -----------------------------
 OUT_PATH = Path("map/data/borders_lcc.json")
 
-# TIGER nation shapefile (2023, generalized 20m)
-TIGER_URL = (
-    "https://www2.census.gov/geo/tiger/GENZ2023/shp/"
-    "cb_2023_us_nation_20m.shp.zip"
-)
+# -----------------------------
+# Cartographic Boundary US Nation (5m resolution)
+# -----------------------------
+CARTO_URL = "https://www2.census.gov/geo/tiger/GENZ2024/shp/cb_2024_us_nation_5m.zip"
 
-# CONUS bbox (lon/lat)
-CONUS_BBOX = {
-    "min_lon": -125,
-    "max_lon": -66,
-    "min_lat": 24,
-    "max_lat": 50,
-}
-
-# RAP Lambert Conformal Conic (same as your map)
+# -----------------------------
+# RAP Lambert Conformal Conic projection
+# -----------------------------
 LCC_PROJ4 = (
     "+proj=lcc "
     "+lat_1=33 +lat_2=45 +lat_0=39 "
@@ -40,10 +35,11 @@ LCC_PROJ4 = (
     "+datum=WGS84 +units=m +no_defs"
 )
 
-
+# -----------------------------
+# Helper function: download + unzip shapefile
+# -----------------------------
 def download_shapefile(url, folder):
-    """Download and unzip a shapefile, return a GeoDataFrame."""
-    print(f"Downloading {url}")
+    print(f"Downloading {url} …")
     resp = requests.get(url)
     resp.raise_for_status()
 
@@ -53,47 +49,42 @@ def download_shapefile(url, folder):
     z.extractall(extract_dir)
 
     shp_file = next(extract_dir.glob("*.shp"))
-    print("Loaded:", shp_file)
+    print(f"Shapefile loaded: {shp_file}")
     return gpd.read_file(shp_file)
 
-
+# -----------------------------
+# Main
+# -----------------------------
 def main():
+    # 1) Download shapefile
+    nation = download_shapefile(CARTO_URL, "tmp_us_nation")
 
-    # 1) Download TIGER nation polygon
-    nation = download_shapefile(TIGER_URL, "tmp_tiger")
+    # 2) Reproject to LCC
+    nation_lcc = nation.to_crs(LCC_PROJ4)
 
-    # 2) Clip to CONUS bbox
-    nation_conus = nation.cx[
-        CONUS_BBOX["min_lon"]:CONUS_BBOX["max_lon"],
-        CONUS_BBOX["min_lat"]:CONUS_BBOX["max_lat"],
-    ]
-
-    # 3) Reproject to LCC
-    nation_lcc = nation_conus.to_crs(LCC_PROJ4)
-
-    # 4) Extract polygons with holes (lake holes preserved)
+    # 3) Extract polygons with holes
     features = []
 
     for geom in nation_lcc.geometry:
-
         if geom is None:
             continue
 
-        # Polygons can have holes
         if geom.geom_type == "MultiPolygon":
             for poly in geom.geoms:
                 # exterior
                 features.append(list(poly.exterior.coords))
-                # holes (interiors)
+                # interiors (lake holes)
                 for interior in poly.interiors:
                     features.append(list(interior.coords))
 
         elif geom.geom_type == "Polygon":
+            # exterior
             features.append(list(geom.exterior.coords))
+            # interiors
             for interior in geom.interiors:
                 features.append(list(interior.coords))
 
-    # 5) Write JSON
+    # 4) Write JSON
     OUT_PATH.parent.mkdir(parents=True, exist_ok=True)
 
     out = {
@@ -106,9 +97,9 @@ def main():
             "x_0": 0,
             "y_0": 0,
             "datum": "WGS84",
-            "units": "m",
+            "units": "m"
         },
-        "features": features,
+        "features": features
     }
 
     with open(OUT_PATH, "w") as f:
