@@ -2,14 +2,13 @@
 """
 convert_borders_to_lcc.py
 
-Fully robust version:
-- Downloads Natural Earth country + state lines
-- Automatically detects USA column
-- Filters to CONUS (lower 48)
+Robust version for GitHub Actions:
+- Downloads Natural Earth borders
+- Filters to CONUS USA (lower 48)
 - Preserves Great Lakes
 - Combines country + state borders
 - Projects to Lambert Conformal Conic
-- Outputs JSON for your map
+- Outputs JSON
 """
 
 import geopandas as gpd
@@ -52,18 +51,14 @@ def download_shapefile(url, folder):
     return gpd.read_file(shp_file)
 
 
-def find_usa_column(df):
+def filter_usa(df):
     """
-    Automatically detect which column contains 'United States' text.
+    Filter a GeoDataFrame to United States rows.
+    Uses 'ADMIN' column, case-insensitive substring match.
     """
-    for col in df.columns:
-        if df[col].dtype == object:
-            try:
-                if df[col].str.contains("United States").any():
-                    return col
-            except Exception:
-                continue
-    raise RuntimeError(f"No column contains 'United States' in {df.columns}")
+    if "ADMIN" not in df.columns:
+        raise RuntimeError(f"'ADMIN' column not found in {df.columns}")
+    return df[df["ADMIN"].str.contains("United States", case=False, na=False)]
 
 
 def clip_conus(df):
@@ -89,12 +84,9 @@ def main():
     countries = download_shapefile(COUNTRY_URL, "tmp_countries")
     states = download_shapefile(STATE_LINES_URL, "tmp_states")
 
-    # Robust USA filtering
-    usa_col_country = find_usa_column(countries)
-    countries = countries[countries[usa_col_country].str.contains("United States")]
-
-    usa_col_states = find_usa_column(states)
-    states = states[states[usa_col_states].str.contains("United States")]
+    # Filter to USA
+    countries = filter_usa(countries)
+    states = filter_usa(states)
 
     # Clip to CONUS bounding box
     countries = clip_conus(countries)
