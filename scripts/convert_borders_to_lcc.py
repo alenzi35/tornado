@@ -18,7 +18,7 @@ STATE_LINES_URL = "https://naturalearth.s3.amazonaws.com/50m_cultural/ne_50m_adm
 
 
 # =============================
-# Helper: download shapefile
+# Download helper
 # =============================
 
 def download_shapefile(url, folder):
@@ -52,7 +52,7 @@ state_lines = download_shapefile(
 
 
 # =============================
-# Filter country = USA
+# Filter USA country outline
 # =============================
 
 usa = countries[
@@ -61,8 +61,8 @@ usa = countries[
 
 
 # =============================
-# Remove Alaska, Hawaii, territories
-# via bounding box filter (CONUS)
+# CONUS bounding box filter
+# removes Alaska, Hawaii, territories
 # =============================
 
 min_lon = -125
@@ -74,18 +74,18 @@ usa = usa.cx[min_lon:max_lon, min_lat:max_lat]
 
 
 # =============================
-# Filter state borders to USA only
+# Filter state borders (correct column = admin)
 # =============================
 
 states = state_lines[
-    state_lines["adm0_name"] == "United States of America"
+    state_lines["admin"] == "United States of America"
 ]
 
 states = states.cx[min_lon:max_lon, min_lat:max_lat]
 
 
 # =============================
-# Build RAP LCC projection
+# RAP projection
 # =============================
 
 print("Building projection...")
@@ -114,13 +114,13 @@ states_lcc = states.to_crs(lcc_proj)
 
 
 # =============================
-# Convert geometries to lines
+# Extract line coordinates
 # =============================
 
 features = []
 
 
-# Country outline (exterior only)
+# Country outline
 for geom in usa_lcc.geometry:
 
     if geom.geom_type == "MultiPolygon":
@@ -138,7 +138,7 @@ for geom in usa_lcc.geometry:
         )
 
 
-# State borders (lines)
+# State lines
 for geom in states_lcc.geometry:
 
     if geom.geom_type == "MultiLineString":
@@ -157,7 +157,7 @@ for geom in states_lcc.geometry:
 
 
 # =============================
-# Output JSON
+# Save JSON
 # =============================
 
 out = {
@@ -179,5 +179,5 @@ with open(OUT_PATH, "w") as f:
     json.dump(out, f)
 
 
-print(f"Saved {len(features)} border lines.")
+print(f"Saved {len(features)} border lines")
 print("Done.")
