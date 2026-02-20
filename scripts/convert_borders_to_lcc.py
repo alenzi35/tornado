@@ -8,71 +8,123 @@ import json
 from pathlib import Path
 from pyproj import CRS
 
-# -----------------------------
-# Paths
-# -----------------------------
-OUT_PATH = Path("map/data/borders_lcc.json")
-TMP_FOLDER = Path("tmp_borders")
+OUT_PATH = Path("map/data/borders_grid.json")
 
-NE_URL = "https://naturalearth.s3.amazonaws.com/50m_cultural/ne_50m_admin_1_states_provinces.zip"
+URL = "https://www2.census.gov/geo/tiger/GENZ2024/shp/cb_2024_us_state_5m.zip"
 
-# -----------------------------
-# RAP LCC projection (matches process_rap.py)
-# -----------------------------
-# You can hardcode RAP params or extract from GRIB; here we hardcode example values
-rap_crs = CRS.from_proj4(
-    "+proj=lcc +lat_1=50 +lat_2=50 +lat_0=50 +lon_0=253 "
-    "+a=6371229 +b=6371229 +units=m +no_defs"
+# RAP projection (correct spherical earth)
+RAP_CRS = CRS.from_proj4(
+    "+proj=lcc "
+    "+lat_1=25 "
+    "+lat_2=25 "
+    "+lat_0=25 "
+    "+lon_0=265 "
+    "+a=6371229 "
+    "+b=6371229 "
+    "+units=m "
+    "+no_defs"
 )
 
-# -----------------------------
-# Download and load Natural Earth shapefile
-# -----------------------------
-print("Downloading Natural Earth borders...")
-TMP_FOLDER.mkdir(exist_ok=True)
+# THESE MUST MATCH YOUR RAP GRID EXACTLY
+DX = 13000.0
+DY = 13000.0
 
-resp = requests.get(NE_URL)
-resp.raise_for_status()
-z = zipfile.ZipFile(io.BytesIO(resp.content))
-z.extractall(TMP_FOLDER)
+NX = 451
+NY = 337
 
-shp_path = TMP_FOLDER / "ne_50m_admin_1_states_provinces.shp"
-gdf = gpd.read_file(shp_path)
+# RAP grid origin (lower-left corner)
+X0 = -2699020.142521929
+Y0 = -1588819.031011287
 
-# -----------------------------
-# Filter to USA only
-# -----------------------------
-gdf = gdf[gdf["admin"] == "United States of America"]
 
-# -----------------------------
-# Reproject borders to RAP CRS
-# -----------------------------
-gdf = gdf.to_crs(rap_crs)
+def download_shapefile(url, folder):
 
-# -----------------------------
-# Convert geometries to list of coordinates (in meters)
-# -----------------------------
-features = []
+    print(f"Downloading {url}")
 
-for geom in gdf.geometry:
+    r = requests.get(url)
+    r.raise_for_status()
+
+    z = zipfile.ZipFile(io.BytesIO(r.content))
+
+    folder = Path(folder)
+    folder.mkdir(exist_ok=True)
+
+    z.extractall(folder)
+
+    shp = next(folder.glob("*.shp"))
+
+    return gpd.read_file(shp)
+
+
+def proj_to_grid(x, y):
+
+    gx = (x - X0) / DX
+    gy = (y - Y0) / DY
+
+    return gx, gy
+
+
+def convert_geom(geom):
+
+    rings = []
+
     if geom.geom_type == "Polygon":
-        features.append(list(geom.exterior.coords))
+
+        rings.append(geom.exterior.coords)
+
         for hole in geom.interiors:
-            features.append(list(hole.coords))
+            rings.append(hole.coords)
+
     elif geom.geom_type == "MultiPolygon":
+
         for poly in geom.geoms:
-            features.append(list(poly.exterior.coords))
+
+            rings.append(poly.exterior.coords)
+
             for hole in poly.interiors:
-                features.append(list(hole.coords))
+                rings.append(hole.coords)
 
-# -----------------------------
-# Save JSON
-# -----------------------------
-OUT_PATH.parent.mkdir(exist_ok=True)
-with open(OUT_PATH, "w") as f:
-    json.dump({
-        "features": features
-    }, f)
+    result = []
 
-print(f"Saved {len(features)} borders to {OUT_PATH}")
-print("Done.")
+    for ring in rings:
+
+        converted = []
+
+        for x, y in ring:
+
+            gx, gy = proj_to_grid(x, y)
+
+            converted.append([gx, gy])
+
+        result.append(converted)
+
+    return result
+
+
+def main():
+
+    states = download_shapefile(URL, "tmp_states")
+
+    states = states.to_crs(RAP_CRS)
+
+    features = []
+
+    for geom in states.geometry:
+
+        features.extend(convert_geom(geom))
+
+    OUT_PATH.parent.mkdir(parents=True, exist_ok=True)
+
+    with open(OUT_PATH, "w") as f:
+
+        json.dump({
+            "nx": NX,
+            "ny": NY,
+            "features": features
+        }, f)
+
+    print("Borders now perfectly aligned with RAP grid.")
+
+
+if __name__ == "__main__":
+    main()
