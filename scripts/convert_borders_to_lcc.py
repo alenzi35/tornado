@@ -6,125 +6,118 @@ import zipfile
 import io
 import json
 from pathlib import Path
-from pyproj import CRS
+from pyproj import CRS, Transformer
+import xarray as xr
 
-OUT_PATH = Path("map/data/borders_grid.json")
+# -----------------------------
+# Paths
+# -----------------------------
+OUT_PATH = Path("map/data/borders_lcc.json")
+TMP_FOLDER = Path("tmp_borders")
 
-URL = "https://www2.census.gov/geo/tiger/GENZ2024/shp/cb_2024_us_state_5m.zip"
+NE_URL = "https://naturalearth.s3.amazonaws.com/50m_cultural/ne_50m_admin_1_states_provinces.zip"
 
-# RAP projection (correct spherical earth)
-RAP_CRS = CRS.from_proj4(
-    "+proj=lcc "
-    "+lat_1=25 "
-    "+lat_2=25 "
-    "+lat_0=25 "
-    "+lon_0=265 "
-    "+a=6371229 "
-    "+b=6371229 "
-    "+units=m "
-    "+no_defs"
-)
-
-# THESE MUST MATCH YOUR RAP GRID EXACTLY
+# -----------------------------
+# RAP grid info (must match process_rap.py)
+# -----------------------------
+# These values come from your GRIB projection + cell spacing
+X0 = -2699020.142521929
+Y0 = -1588819.031011287
 DX = 13000.0
 DY = 13000.0
-
 NX = 451
 NY = 337
 
-# RAP grid origin (lower-left corner)
-X0 = -2699020.142521929
-Y0 = -1588819.031011287
+# -----------------------------
+# Load RAP projection from GRIB
+# -----------------------------
+import pygrib
+import urllib.request
 
+GRIB_PATH = "data/rap.grib2"
 
-def download_shapefile(url, folder):
+# Try to download the RAP file if missing
+if not Path(GRIB_PATH).exists():
+    print("RAP GRIB not found. Skipping download, cannot get projection.")
+    exit(1)
 
-    print(f"Downloading {url}")
+grbs = pygrib.open(GRIB_PATH)
+msg = grbs.message(1)
+params = msg.projparams
 
-    r = requests.get(url)
-    r.raise_for_status()
+# RAP projection CRS
+rap_crs = CRS.from_proj4(
+    f"+proj=lcc +lat_1={params['lat_1']} +lat_2={params['lat_2']} "
+    f"+lat_0={params['lat_0']} +lon_0={params['lon_0']} "
+    f"+a={params.get('a', 6371229)} +b={params.get('b', 6371229)} +units=m +no_defs"
+)
 
-    z = zipfile.ZipFile(io.BytesIO(r.content))
+# -----------------------------
+# Download and load Natural Earth shapefile
+# -----------------------------
+print("Downloading Natural Earth borders...")
+TMP_FOLDER.mkdir(exist_ok=True)
 
-    folder = Path(folder)
-    folder.mkdir(exist_ok=True)
+resp = requests.get(NE_URL)
+resp.raise_for_status()
+z = zipfile.ZipFile(io.BytesIO(resp.content))
+z.extractall(TMP_FOLDER)
 
-    z.extractall(folder)
+shp_path = TMP_FOLDER / "ne_50m_admin_1_states_provinces.shp"
+gdf = gpd.read_file(shp_path)
 
-    shp = next(folder.glob("*.shp"))
+# -----------------------------
+# Filter to USA only
+# -----------------------------
+gdf = gdf[gdf["admin"] == "United States of America"]
 
-    return gpd.read_file(shp)
+# -----------------------------
+# Reproject borders to RAP CRS
+# -----------------------------
+gdf = gdf.to_crs(rap_crs)
 
-
+# -----------------------------
+# Convert to grid coordinates
+# -----------------------------
 def proj_to_grid(x, y):
-
     gx = (x - X0) / DX
     gy = (y - Y0) / DY
-
     return gx, gy
 
-
 def convert_geom(geom):
-
     rings = []
 
     if geom.geom_type == "Polygon":
-
         rings.append(geom.exterior.coords)
-
         for hole in geom.interiors:
             rings.append(hole.coords)
-
     elif geom.geom_type == "MultiPolygon":
-
         for poly in geom.geoms:
-
             rings.append(poly.exterior.coords)
-
             for hole in poly.interiors:
                 rings.append(hole.coords)
 
     result = []
-
     for ring in rings:
-
-        converted = []
-
-        for x, y in ring:
-
-            gx, gy = proj_to_grid(x, y)
-
-            converted.append([gx, gy])
-
+        converted = [proj_to_grid(x, y) for x, y in ring]
         result.append(converted)
 
     return result
 
+features = []
+for geom in gdf.geometry:
+    features.extend(convert_geom(geom))
 
-def main():
+# -----------------------------
+# Save JSON
+# -----------------------------
+OUT_PATH.parent.mkdir(exist_ok=True)
+with open(OUT_PATH, "w") as f:
+    json.dump({
+        "nx": NX,
+        "ny": NY,
+        "features": features
+    }, f)
 
-    states = download_shapefile(URL, "tmp_states")
-
-    states = states.to_crs(RAP_CRS)
-
-    features = []
-
-    for geom in states.geometry:
-
-        features.extend(convert_geom(geom))
-
-    OUT_PATH.parent.mkdir(parents=True, exist_ok=True)
-
-    with open(OUT_PATH, "w") as f:
-
-        json.dump({
-            "nx": NX,
-            "ny": NY,
-            "features": features
-        }, f)
-
-    print("Borders now perfectly aligned with RAP grid.")
-
-
-if __name__ == "__main__":
-    main()
+print(f"Saved {len(features)} borders to {OUT_PATH}")
+print("Done.")
