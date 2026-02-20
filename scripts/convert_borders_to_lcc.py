@@ -1,11 +1,4 @@
 #!/usr/bin/env python3
-"""
-convert_borders_to_lcc.py
-
-Download and process US Cartographic Boundary (5m) polygon.
-Keeps Great Lakes as holes, projects to Lambert Conformal Conic,
-outputs JSON for map rendering.
-"""
 
 import geopandas as gpd
 import requests
@@ -14,98 +7,85 @@ import io
 import json
 from pathlib import Path
 
-# -----------------------------
-# Output path
-# -----------------------------
 OUT_PATH = Path("map/data/borders_lcc.json")
 
-# -----------------------------
-# Cartographic Boundary US Nation (5m resolution)
-# -----------------------------
-CARTO_URL = "https://www2.census.gov/geo/tiger/GENZ2024/shp/cb_2024_us_nation_5m.zip"
+# Census states shapefile (5m)
+URL = "https://www2.census.gov/geo/tiger/GENZ2024/shp/cb_2024_us_state_5m.zip"
 
-# -----------------------------
-# RAP Lambert Conformal Conic projection
-# -----------------------------
-LCC_PROJ4 = (
+# EXACT RAP projection
+RAP_PROJ4 = (
     "+proj=lcc "
-    "+lat_1=33 +lat_2=45 +lat_0=39 "
-    "+lon_0=-96 "
-    "+x_0=0 +y_0=0 "
-    "+datum=WGS84 +units=m +no_defs"
+    "+lat_1=25 +lat_2=25 "
+    "+lat_0=25 "
+    "+lon_0=265 "
+    "+datum=WGS84 "
+    "+units=m +no_defs"
 )
 
-# -----------------------------
-# Helper function: download + unzip shapefile
-# -----------------------------
+
 def download_shapefile(url, folder):
-    print(f"Downloading {url} …")
-    resp = requests.get(url)
-    resp.raise_for_status()
+    print(f"Downloading {url}")
 
-    z = zipfile.ZipFile(io.BytesIO(resp.content))
-    extract_dir = Path(folder)
-    extract_dir.mkdir(parents=True, exist_ok=True)
-    z.extractall(extract_dir)
+    r = requests.get(url)
+    r.raise_for_status()
 
-    shp_file = next(extract_dir.glob("*.shp"))
-    print(f"Shapefile loaded: {shp_file}")
-    return gpd.read_file(shp_file)
+    z = zipfile.ZipFile(io.BytesIO(r.content))
 
-# -----------------------------
-# Main
-# -----------------------------
+    folder = Path(folder)
+    folder.mkdir(exist_ok=True)
+
+    z.extractall(folder)
+
+    shp = next(folder.glob("*.shp"))
+
+    return gpd.read_file(shp)
+
+
 def main():
-    # 1) Download shapefile
-    nation = download_shapefile(CARTO_URL, "tmp_us_nation")
 
-    # 2) Reproject to LCC
-    nation_lcc = nation.to_crs(LCC_PROJ4)
+    states = download_shapefile(URL, "tmp_states")
 
-    # 3) Extract polygons with holes
+    # Remove territories if desired
+    states = states[~states["STUSPS"].isin([
+        "PR", "VI", "GU", "MP", "AS"
+    ])]
+
+    # Project to RAP CRS
+    states = states.to_crs(RAP_PROJ4)
+
     features = []
 
-    for geom in nation_lcc.geometry:
-        if geom is None:
-            continue
+    for geom in states.geometry:
 
-        if geom.geom_type == "MultiPolygon":
-            for poly in geom.geoms:
-                # exterior
-                features.append(list(poly.exterior.coords))
-                # interiors (lake holes)
-                for interior in poly.interiors:
-                    features.append(list(interior.coords))
+        if geom.geom_type == "Polygon":
 
-        elif geom.geom_type == "Polygon":
-            # exterior
             features.append(list(geom.exterior.coords))
-            # interiors
-            for interior in geom.interiors:
-                features.append(list(interior.coords))
 
-    # 4) Write JSON
+            for hole in geom.interiors:
+                features.append(list(hole.coords))
+
+        elif geom.geom_type == "MultiPolygon":
+
+            for poly in geom.geoms:
+
+                features.append(list(poly.exterior.coords))
+
+                for hole in poly.interiors:
+                    features.append(list(hole.coords))
+
+
     OUT_PATH.parent.mkdir(parents=True, exist_ok=True)
 
-    out = {
-        "projection": {
-            "proj": "lcc",
-            "lat_1": 33,
-            "lat_2": 45,
-            "lat_0": 39,
-            "lon_0": -96,
-            "x_0": 0,
-            "y_0": 0,
-            "datum": "WGS84",
-            "units": "m"
-        },
-        "features": features
-    }
-
     with open(OUT_PATH, "w") as f:
-        json.dump(out, f)
 
-    print(f"Saved {len(features)} polygons (outline + holes) to {OUT_PATH}")
+        json.dump({
+            "projection": RAP_PROJ4,
+            "features": features
+        }, f)
+
+
+    print("Done.")
+    print(f"{len(features)} polygons saved.")
 
 
 if __name__ == "__main__":
