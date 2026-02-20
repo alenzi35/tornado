@@ -2,27 +2,27 @@
 """
 convert_borders_to_lcc.py
 
-Downloads Natural Earth borders, filters to CONUS USA,
-projects to Lambert Conformal Conic, and outputs JSON.
-Includes:
-- CONUS country outline
-- State borders
-- Great Lakes preserved
+Robust version for GitHub Actions:
+- Downloads Natural Earth borders
+- Filters to CONUS USA (lower 48)
+- Preserves Great Lakes
+- Combines country + state lines
+- Projects to Lambert Conformal Conic
+- Exports JSON
 """
 
 import geopandas as gpd
 import requests
 import zipfile
 import io
-import json
 from pathlib import Path
+import json
 
 OUT_PATH = Path("map/data/borders_lcc.json")
 
 COUNTRY_URL = "https://naturalearth.s3.amazonaws.com/50m_cultural/ne_50m_admin_0_countries.zip"
 STATE_LINES_URL = "https://naturalearth.s3.amazonaws.com/50m_cultural/ne_50m_admin_1_states_provinces_lines.zip"
 
-# Lambert Conformal Conic projection parameters
 LCC_PROJ4 = (
     "+proj=lcc "
     "+lat_1=33 +lat_2=45 +lat_0=39 "
@@ -30,6 +30,13 @@ LCC_PROJ4 = (
     "+x_0=0 +y_0=0 "
     "+datum=WGS84 +units=m +no_defs"
 )
+
+CONUS_BBOX = {
+    "min_lon": -125,
+    "max_lon": -66,
+    "min_lat": 24,
+    "max_lat": 50
+}
 
 
 def download_shapefile(url, folder):
@@ -44,23 +51,53 @@ def download_shapefile(url, folder):
     return gpd.read_file(shp_file)
 
 
+def filter_usa(df):
+    """
+    Robustly filter a dataframe to United States using any common column.
+    """
+    possible_cols = ["adm0_name", "admin", "adm0_a3"]
+    usa_col = None
+    for col in possible_cols:
+        if col in df.columns:
+            usa_col = col
+            break
+    if usa_col is None:
+        raise RuntimeError(f"No suitable country column found in {df.columns}")
+    return df[df[usa_col].isin(["United States of America", "USA"])]
+
+
+def clip_conus(df):
+    return df.cx[CONUS_BBOX["min_lon"]:CONUS_BBOX["max_lon"],
+                 CONUS_BBOX["min_lat"]:CONUS_BBOX["max_lat"]]
+
+
+def extract_coords(combined_gdf):
+    features = []
+    for geom in combined_gdf.geometry:
+        if geom is None:
+            continue
+        if geom.type == "LineString":
+            features.append(list(geom.coords))
+        elif geom.type == "MultiLineString":
+            for line in geom.geoms:
+                features.append(list(line.coords))
+    return features
+
+
 def main():
-    # Load datasets
+    # Download datasets
     countries = download_shapefile(COUNTRY_URL, "tmp_countries")
     states = download_shapefile(STATE_LINES_URL, "tmp_states")
 
-    # Filter to CONUS USA only
-    countries = countries[countries["admin"] == "United States of America"]
-    # <-- NOTE: state lines use adm0_name, NOT admin
-    states = states[states["adm0_name"] == "United States of America"]
+    # Filter to USA robustly
+    countries = filter_usa(countries)
+    states = filter_usa(states)
 
-    # Bounding box for CONUS
-    min_lon, max_lon = -125, -66
-    min_lat, max_lat = 24, 50
-    countries = countries.cx[min_lon:max_lon, min_lat:max_lat]
-    states = states.cx[min_lon:max_lon, min_lat:max_lat]
+    # Clip to CONUS bounding box
+    countries = clip_conus(countries)
+    states = clip_conus(states)
 
-    # Convert country polygons to boundary lines
+    # Convert country polygon to boundary lines
     country_borders = countries.boundary
 
     # Combine country + state lines
@@ -72,20 +109,13 @@ def main():
     # Project to LCC
     combined = combined.to_crs(LCC_PROJ4)
 
-    # Export as JSON
+    # Extract coordinates
+    features = extract_coords(combined)
+
+    # Ensure output directory exists
     OUT_PATH.parent.mkdir(parents=True, exist_ok=True)
 
-    features = []
-    for geom in combined.geometry:
-        # handle LineString or MultiLineString
-        if geom.type == "LineString":
-            coords = list(geom.coords)
-            features.append(coords)
-        elif geom.type == "MultiLineString":
-            for line in geom.geoms:
-                coords = list(line.coords)
-                features.append(coords)
-
+    # Save JSON
     out = {
         "projection": {
             "proj": "lcc",
