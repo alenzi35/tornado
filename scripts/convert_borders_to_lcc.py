@@ -1,173 +1,90 @@
+#!/usr/bin/env python3
+"""
+convert_borders_to_lcc.py
+
+Downloads Natural Earth borders, filters to USA only,
+projects to Lambert Conformal Conic, and exports GeoJSON.
+No lakes included.
+"""
+
 import geopandas as gpd
 import requests
 import zipfile
 import io
-import json
-from pyproj import CRS
+from pathlib import Path
 
+# Output path
+OUTPUT_PATH = Path("data/borders_lcc.geojson")
 
-# =============================
-# Paths
-# =============================
+# Lambert Conformal Conic projection (CONUS standard)
+LCC_PROJ = {
+    "proj": "lcc",
+    "lat_1": 33,
+    "lat_2": 45,
+    "lat_0": 39,
+    "lon_0": -96,
+    "x_0": 0,
+    "y_0": 0,
+    "datum": "WGS84",
+    "units": "m",
+    "no_defs": True,
+}
 
-OUT_PATH = "map/data/borders_lcc.json"
-
-COUNTRIES_URL = "https://naturalearth.s3.amazonaws.com/50m_cultural/ne_50m_admin_0_countries.zip"
-
+COUNTRY_URL = "https://naturalearth.s3.amazonaws.com/50m_cultural/ne_50m_admin_0_countries.zip"
 STATE_LINES_URL = "https://naturalearth.s3.amazonaws.com/50m_cultural/ne_50m_admin_1_states_provinces_lines.zip"
 
 
-# =============================
-# Download helper
-# =============================
-
-def download_shapefile(url, folder):
-
+def download_shapefile(url):
     print(f"Downloading {url}")
+    response = requests.get(url)
+    response.raise_for_status()
 
-    resp = requests.get(url)
-    resp.raise_for_status()
+    z = zipfile.ZipFile(io.BytesIO(response.content))
 
-    z = zipfile.ZipFile(io.BytesIO(resp.content))
-    z.extractall(folder)
+    extract_dir = Path("temp") / Path(url).stem
+    extract_dir.mkdir(parents=True, exist_ok=True)
 
-    shp = [f for f in z.namelist() if f.endswith(".shp")][0]
+    z.extractall(extract_dir)
 
-    return gpd.read_file(f"{folder}/{shp}")
-
-
-# =============================
-# Load datasets
-# =============================
-
-countries = download_shapefile(
-    COUNTRIES_URL,
-    "tmp_countries"
-)
-
-state_lines = download_shapefile(
-    STATE_LINES_URL,
-    "tmp_states"
-)
+    shp_file = next(extract_dir.glob("*.shp"))
+    return gpd.read_file(shp_file)
 
 
-# =============================
-# Filter USA country outline
-# =============================
+def main():
 
-usa = countries[
-    countries["ADMIN"] == "United States of America"
-]
+    # Download datasets
+    countries = download_shapefile(COUNTRY_URL)
+    state_lines = download_shapefile(STATE_LINES_URL)
 
+    # Filter to USA only
+    countries = countries[
+        countries["admin"] == "United States of America"
+    ]
 
-# =============================
-# CONUS bounding box filter
-# removes Alaska, Hawaii, territories
-# =============================
+    state_lines = state_lines[
+        state_lines["adm0_name"] == "United States of America"
+    ]
 
-min_lon = -125
-max_lon = -66
-min_lat = 24
-max_lat = 50
+    # Convert country polygon to boundary line
+    country_border = countries.boundary
 
-usa = usa.cx[min_lon:max_lon, min_lat:max_lat]
+    # Combine country border + state borders
+    combined = gpd.GeoDataFrame(
+        geometry=list(country_border.geometry) + list(state_lines.geometry),
+        crs="EPSG:4326"
+    )
 
+    # Project to Lambert Conformal Conic
+    combined = combined.to_crs(LCC_PROJ)
 
-# =============================
-# Filter state borders using ISO code
-# =============================
+    # Ensure output directory exists
+    OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
 
-states = state_lines[
-    state_lines["adm0_a3"] == "USA"
-]
+    # Save
+    combined.to_file(OUTPUT_PATH, driver="GeoJSON")
 
-states = states.cx[min_lon:max_lon, min_lat:max_lat]
-
-
-# =============================
-# Build RAP LCC projection
-# =============================
-
-print("Building projection...")
-
-lcc_proj = CRS.from_proj4(
-    "+proj=lcc "
-    "+lat_1=50 "
-    "+lat_2=50 "
-    "+lat_0=50 "
-    "+lon_0=253 "
-    "+a=6371229 "
-    "+b=6371229 "
-    "+units=m "
-    "+no_defs"
-)
+    print(f"Saved to {OUTPUT_PATH}")
 
 
-# =============================
-# Reproject
-# =============================
-
-print("Reprojecting...")
-
-usa_lcc = usa.to_crs(lcc_proj)
-states_lcc = states.to_crs(lcc_proj)
-
-
-# =============================
-# Extract line coordinates
-# =============================
-
-features = []
-
-
-# Country outline
-for geom in usa_lcc.geometry:
-
-    if geom.geom_type == "MultiPolygon":
-
-        for poly in geom.geoms:
-
-            features.append(list(poly.exterior.coords))
-
-    elif geom.geom_type == "Polygon":
-
-        features.append(list(geom.exterior.coords))
-
-
-# State borders
-for geom in states_lcc.geometry:
-
-    if geom.geom_type == "MultiLineString":
-
-        for line in geom.geoms:
-
-            features.append(list(line.coords))
-
-    elif geom.geom_type == "LineString":
-
-        features.append(list(geom.coords))
-
-
-# =============================
-# Save JSON
-# =============================
-
-out = {
-    "projection": {
-        "proj": "lcc",
-        "lat_0": 50,
-        "lat_1": 50,
-        "lat_2": 50,
-        "lon_0": 253,
-        "a": 6371229,
-        "b": 6371229
-    },
-    "features": features
-}
-
-with open(OUT_PATH, "w") as f:
-    json.dump(out, f)
-
-
-print(f"Saved {len(features)} border lines")
-print("Done.")
+if __name__ == "__main__":
+    main()
