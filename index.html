@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8" />
-<title>LCC Tornado Probability Map (CONUS)</title>
+<title>LCC Tornado Probability Map — CONUS Only</title>
 
 <style>
   body {
@@ -58,6 +58,7 @@ const infoBox = document.getElementById("forecastInfo");
 let scale = 1;
 let offsetX = 0;
 let offsetY = 0;
+
 let dragging = false;
 let lastX, lastY;
 
@@ -68,7 +69,7 @@ let minProb = Infinity;
 let maxProb = -Infinity;
 
 // --------------------------------
-// Resize canvas
+// Resize
 // --------------------------------
 function resizeCanvas() {
   canvas.width = window.innerWidth;
@@ -78,7 +79,7 @@ window.addEventListener("resize", resizeCanvas);
 resizeCanvas();
 
 // --------------------------------
-// Load CONUS borders (Census cb_2024_us_state_5m LCC-projected JSON)
+// Load borders
 // --------------------------------
 fetch("map/data/borders_lcc.json")
   .then(r => r.json())
@@ -89,14 +90,14 @@ fetch("map/data/borders_lcc.json")
   });
 
 // --------------------------------
-// Load masked CONUS tornado probability cells
+// Load CONUS-only cells
 // --------------------------------
 fetch("map/data/tornado_prob_lcc_masked.json")
   .then(r => r.json())
   .then(data => {
     cells = data.features;
 
-    // Compute min/max for normalization
+    // Compute probability range
     cells.forEach(c => {
       minProb = Math.min(minProb, c.prob);
       maxProb = Math.max(maxProb, c.prob);
@@ -106,14 +107,11 @@ fetch("map/data/tornado_prob_lcc_masked.json")
     const runDate = data.run_date || "??????";
     const runHour = data.run_hour || "??";
     const fcst = data.forecast || "F01";
-
     const validStart = (parseInt(runHour,10)+1)%24;
     const validEnd = (parseInt(runHour,10)+2)%24;
-
     function pad(n){return n.toString().padStart(2,"0");}
-
     infoBox.innerHTML =
-      `<b>RAP Tornado Probability</b><br>
+      `<b>RAP Tornado Probability — CONUS</b><br>
       Run: ${runDate} ${pad(runHour)}Z (${fcst})<br>
       Valid: ${pad(validStart)}:00–${pad(validEnd)}:00 UTC`;
 
@@ -131,6 +129,7 @@ function normProb(p) {
 
 // --------------------------------
 // Probability → Color
+// Blue → Purple → Red
 // --------------------------------
 function probToColor(p) {
   const t = normProb(p);
@@ -150,7 +149,7 @@ function probToColor(p) {
 }
 
 // --------------------------------
-// Fit view to CONUS cells + borders
+// Fit view to bounds
 // --------------------------------
 function fitView() {
   let minX = Infinity, maxX = -Infinity;
@@ -181,7 +180,7 @@ function fitView() {
 }
 
 // --------------------------------
-// Draw map
+// Draw everything
 // --------------------------------
 function draw() {
   ctx.setTransform(1,0,0,1,0,0);
@@ -189,7 +188,7 @@ function draw() {
 
   ctx.setTransform(scale, 0, 0, -scale, offsetX, offsetY);
 
-  // Draw cells
+  // Cells
   cells.forEach(c => {
     ctx.fillStyle = probToColor(c.prob);
     const dx = c.dx || 1000;
@@ -197,7 +196,7 @@ function draw() {
     ctx.fillRect(c.x, c.y, dx, dy);
   });
 
-  // Draw borders
+  // Borders
   ctx.strokeStyle = "white";
   ctx.lineWidth = 1/scale;
 
@@ -212,19 +211,21 @@ function draw() {
 }
 
 // --------------------------------
-// Screen → LCC coords
+// Screen → LCC
 // --------------------------------
 function screenToLCC(px, py) {
-  return { x: (px - offsetX) / scale, y: -(py - offsetY) / scale };
+  return {
+    x: (px - offsetX) / scale,
+    y: -(py - offsetY) / scale
+  };
 }
 
 // --------------------------------
-// Tooltip on hover
+// Hover tooltip
 // --------------------------------
 canvas.addEventListener("mousemove", e => {
   const { x, y } = screenToLCC(e.offsetX, e.offsetY);
   let hit = null;
-
   for (const c of cells) {
     const dx = c.dx || 1000;
     const dy = c.dy || 1000;
@@ -233,12 +234,11 @@ canvas.addEventListener("mousemove", e => {
       break;
     }
   }
-
   if (hit) {
     tooltip.style.display = "block";
     tooltip.style.left = (e.pageX + 12) + "px";
     tooltip.style.top = (e.pageY + 12) + "px";
-    tooltip.innerHTML = `Probability: ${(hit.prob*100).toFixed(4)}%`;
+    tooltip.innerHTML = `Probability: ${(hit.prob * 100).toFixed(4)}%`;
   } else {
     tooltip.style.display = "none";
   }
@@ -266,9 +266,7 @@ canvas.addEventListener("mousedown", e => {
   lastX = e.clientX;
   lastY = e.clientY;
 });
-
 window.addEventListener("mouseup", () => dragging = false);
-
 window.addEventListener("mousemove", e => {
   if (!dragging) return;
   offsetX += e.clientX - lastX;
