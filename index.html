@@ -2,8 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8" />
-<title>LCC Tornado Probability Map — CONUS Only</title>
-
+<title>CONUS Tornado Probability Map</title>
 <style>
   body {
     margin: 0;
@@ -42,7 +41,6 @@
   }
 </style>
 </head>
-
 <body>
 
 <canvas id="mapCanvas"></canvas>
@@ -58,18 +56,16 @@ const infoBox = document.getElementById("forecastInfo");
 let scale = 1;
 let offsetX = 0;
 let offsetY = 0;
-
 let dragging = false;
 let lastX, lastY;
 
 let cells = [];
 let borders = [];
-
 let minProb = Infinity;
 let maxProb = -Infinity;
 
 // --------------------------------
-// Resize
+// Resize canvas
 // --------------------------------
 function resizeCanvas() {
   canvas.width = window.innerWidth;
@@ -79,7 +75,7 @@ window.addEventListener("resize", resizeCanvas);
 resizeCanvas();
 
 // --------------------------------
-// Load borders
+// Load borders (lower 48 only)
 // --------------------------------
 fetch("map/data/borders_lcc.json")
   .then(r => r.json())
@@ -90,7 +86,7 @@ fetch("map/data/borders_lcc.json")
   });
 
 // --------------------------------
-// Load CONUS-only cells
+// Load tornado cells (filtered)
 // --------------------------------
 fetch("map/data/tornado_prob_lcc_masked.json")
   .then(r => r.json())
@@ -107,13 +103,12 @@ fetch("map/data/tornado_prob_lcc_masked.json")
     const runDate = data.run_date || "??????";
     const runHour = data.run_hour || "??";
     const fcst = data.forecast || "F01";
-    const validStart = (parseInt(runHour,10)+1)%24;
-    const validEnd = (parseInt(runHour,10)+2)%24;
-    function pad(n){return n.toString().padStart(2,"0");}
+
+    const validParts = data.valid?.split(" ") || ["??:00","??:00"];
     infoBox.innerHTML =
-      `<b>RAP Tornado Probability — CONUS</b><br>
-      Run: ${runDate} ${pad(runHour)}Z (${fcst})<br>
-      Valid: ${pad(validStart)}:00–${pad(validEnd)}:00 UTC`;
+      `<b>RAP Tornado Probability</b><br>
+       Run: ${runDate} ${runHour}Z (${fcst})<br>
+       Valid: ${validParts[0]}–${validParts[1]} UTC`;
 
     fitView();
     draw();
@@ -128,8 +123,7 @@ function normProb(p) {
 }
 
 // --------------------------------
-// Probability → Color
-// Blue → Purple → Red
+// Probability → color (blue→purple→red)
 // --------------------------------
 function probToColor(p) {
   const t = normProb(p);
@@ -149,11 +143,10 @@ function probToColor(p) {
 }
 
 // --------------------------------
-// Fit view to bounds
+// Fit view to data
 // --------------------------------
 function fitView() {
-  let minX = Infinity, maxX = -Infinity;
-  let minY = Infinity, maxY = -Infinity;
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
 
   cells.forEach(c => {
     minX = Math.min(minX, c.x);
@@ -173,22 +166,21 @@ function fitView() {
 
   const rx = maxX - minX;
   const ry = maxY - minY;
-
-  scale = Math.min(canvas.width / rx, canvas.height / ry) * 0.9;
+  scale = Math.min(canvas.width/rx, canvas.height/ry) * 0.9;
   offsetX = canvas.width/2 - (minX + rx/2) * scale;
   offsetY = canvas.height/2 + (minY + ry/2) * scale;
 }
 
 // --------------------------------
-// Draw everything
+// Draw map
 // --------------------------------
 function draw() {
   ctx.setTransform(1,0,0,1,0,0);
   ctx.clearRect(0,0,canvas.width,canvas.height);
 
-  ctx.setTransform(scale, 0, 0, -scale, offsetX, offsetY);
+  ctx.setTransform(scale,0,0,-scale,offsetX,offsetY);
 
-  // Cells
+  // Draw cells
   cells.forEach(c => {
     ctx.fillStyle = probToColor(c.prob);
     const dx = c.dx || 1000;
@@ -196,10 +188,9 @@ function draw() {
     ctx.fillRect(c.x, c.y, dx, dy);
   });
 
-  // Borders
+  // Draw borders
   ctx.strokeStyle = "white";
   ctx.lineWidth = 1/scale;
-
   ctx.beginPath();
   borders.forEach(line => {
     line.forEach(([x,y], i) => {
@@ -211,20 +202,20 @@ function draw() {
 }
 
 // --------------------------------
-// Screen → LCC
+// Screen → LCC coordinates
 // --------------------------------
 function screenToLCC(px, py) {
   return {
-    x: (px - offsetX) / scale,
-    y: -(py - offsetY) / scale
+    x: (px - offsetX)/scale,
+    y: -(py - offsetY)/scale
   };
 }
 
 // --------------------------------
-// Hover tooltip
+// Tooltip hover
 // --------------------------------
 canvas.addEventListener("mousemove", e => {
-  const { x, y } = screenToLCC(e.offsetX, e.offsetY);
+  const {x,y} = screenToLCC(e.offsetX, e.offsetY);
   let hit = null;
   for (const c of cells) {
     const dx = c.dx || 1000;
@@ -238,7 +229,7 @@ canvas.addEventListener("mousemove", e => {
     tooltip.style.display = "block";
     tooltip.style.left = (e.pageX + 12) + "px";
     tooltip.style.top = (e.pageY + 12) + "px";
-    tooltip.innerHTML = `Probability: ${(hit.prob * 100).toFixed(4)}%`;
+    tooltip.innerHTML = `Probability: ${(hit.prob*100).toFixed(4)}%`;
   } else {
     tooltip.style.display = "none";
   }
@@ -276,6 +267,5 @@ window.addEventListener("mousemove", e => {
   draw();
 });
 </script>
-
 </body>
 </html>
