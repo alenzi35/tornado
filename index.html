@@ -1,305 +1,189 @@
 <!DOCTYPE html>
-<html lang="en">
+<html>
 <head>
-<meta charset="UTF-8" />
-<title>LCC Tornado Probability Map</title>
+<meta charset="utf-8">
+<title>RAP Tornado Probability</title>
+
+<link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css"/>
 
 <style>
-  body {
+body {
     margin: 0;
-    overflow: hidden;
-    background: #111;
-  }
+    padding: 0;
+}
 
-  canvas {
-    display: block;
-  }
+#map {
+    width: 100vw;
+    height: 100vh;
+}
 
-  #tooltip {
-    position: absolute;
-    padding: 6px 10px;
-    background: rgba(0,0,0,0.85);
-    color: white;
-    border-radius: 5px;
-    pointer-events: none;
-    display: none;
-    font-family: sans-serif;
-    font-size: 13px;
-  }
-
-  #forecastInfo {
+.valid-time-box {
     position: absolute;
     top: 10px;
-    left: 10px;
-    padding: 8px 12px;
-    background: rgba(0,0,0,0.7);
+    left: 50px;
+    background: rgba(0,0,0,0.6);
     color: white;
-    font-family: sans-serif;
-    font-size: 13px;
-    border-radius: 6px;
-    z-index: 10;
-  }
+    padding: 6px 10px;
+    font-family: monospace;
+    font-size: 14px;
+    border-radius: 4px;
+    z-index: 1000;
+}
 </style>
-</head>
 
+</head>
 <body>
 
-<canvas id="mapCanvas"></canvas>
-<div id="tooltip"></div>
-<div id="forecastInfo">Loading forecast…</div>
+<div id="map"></div>
+<div class="valid-time-box" id="validTime">Loading...</div>
+
+<script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+
+<!-- REQUIRED for proper polygon clipping -->
+<script src="https://unpkg.com/leaflet-pip@1.1.0/leaflet-pip.min.js"></script>
 
 <script>
-const canvas=document.getElementById("mapCanvas");
-const ctx=canvas.getContext("2d");
-const tooltip=document.getElementById("tooltip");
-const infoBox=document.getElementById("forecastInfo");
 
-let scale=1;
-let offsetX=0;
-let offsetY=0;
+// ---------------- MAP SETUP ----------------
 
-let dragging=false;
-let lastX,lastY;
-
-let cells=[];
-let borders=[];
+const map = L.map('map', {
+    zoomControl: false,
+    attributionControl: false
+}).setView([39, -96], 5);
 
 
-// --------------------------------
-// Resize
-// --------------------------------
-function resizeCanvas(){
-  canvas.width=window.innerWidth;
-  canvas.height=window.innerHeight;
+// ---------------- COLOR GRADIENT ----------------
+// 0% = blue
+// 1% = red
+// smooth gradient
+
+function getColor(prob) {
+
+    const p = Math.max(0, Math.min(prob, 0.01));
+
+    const t = p / 0.01;
+
+    const r = Math.round(255 * t);
+    const g = 0;
+    const b = Math.round(255 * (1 - t));
+
+    return `rgb(${r},${g},${b})`;
 }
-window.addEventListener("resize",resizeCanvas);
-resizeCanvas();
 
 
-// --------------------------------
-// Load borders
-// --------------------------------
-fetch("map/data/borders_lcc.json")
-.then(r=>r.json())
-.then(data=>{
-  borders=data.features;
-  fitView();
-  draw();
+// ---------------- LOAD CONUS OUTLINE ----------------
+
+let conusLayer;
+
+fetch("conus.geojson")
+.then(res => res.json())
+.then(data => {
+
+    conusLayer = L.geoJSON(data, {
+
+        style: {
+            color: "#FFFFFF",
+            weight: 1,
+            fill: false
+        }
+
+    }).addTo(map);
+
+    loadCells();
 });
 
 
-// --------------------------------
-// Load cells
-// --------------------------------
-fetch("map/data/tornado_prob_lcc.json")
-.then(r=>r.json())
-.then(data=>{
+// ---------------- LOAD STATE BORDERS ----------------
 
-  cells=data.features;
+fetch("states.geojson")
+.then(res => res.json())
+.then(data => {
 
-  const runDate=data.run_date;
-  const runHour=parseInt(data.run_hour);
-  const fcst=data.forecast;
+    L.geoJSON(data, {
 
-  const validStart=(runHour+1)%24;
-  const validEnd=(runHour+2)%24;
+        style: {
+            color: "#FFFFFF",
+            weight: 0.5,
+            fill: false
+        }
 
-  function pad(n){return n.toString().padStart(2,"0");}
+    }).addTo(map);
 
-  infoBox.innerHTML=
-    `Run: ${runDate} ${pad(runHour)}Z (${fcst})<br>
-     Valid: ${pad(validStart)}:00–${pad(validEnd)}:00 UTC`;
-
-  fitView();
-  draw();
 });
 
 
-// --------------------------------
-// Gradient scale
-// --------------------------------
-function probToColor(p){
+// ---------------- CONUS CELL CHECK ----------------
 
-  const maxP=0.01;
-  let t=p/maxP;
+function isCellInCONUS(bounds) {
 
-  if(t<0)t=0;
-  if(t>1)t=1;
+    const corners = [
 
-  const stops=[
-    {t:0.00,c:[255,255,224]},
-    {t:0.25,c:[255,255,0]},
-    {t:0.50,c:[255,165,0]},
-    {t:0.75,c:[255,0,0]},
-    {t:1.00,c:[255,0,255]}
-  ];
+        [bounds.getSouth(), bounds.getWest()],
+        [bounds.getSouth(), bounds.getEast()],
+        [bounds.getNorth(), bounds.getWest()],
+        [bounds.getNorth(), bounds.getEast()]
 
-  let i;
-  for(i=0;i<stops.length-1;i++){
-    if(t>=stops[i].t && t<=stops[i+1].t) break;
-  }
+    ];
 
-  const s0=stops[i];
-  const s1=stops[i+1];
+    for (const corner of corners) {
 
-  const k=(t-s0.t)/(s1.t-s0.t);
+        if (leafletPip.pointInLayer(corner, conusLayer).length > 0) {
+            return true;
+        }
 
-  const r=Math.round(s0.c[0]+k*(s1.c[0]-s0.c[0]));
-  const g=Math.round(s0.c[1]+k*(s1.c[1]-s0.c[1]));
-  const b=Math.round(s0.c[2]+k*(s1.c[2]-s0.c[2]));
-
-  return `rgba(${r},${g},${b},0.85)`;
-}
-
-
-// --------------------------------
-// Fit view
-// --------------------------------
-function fitView(){
-
-  if(cells.length===0)return;
-
-  let minX=Infinity,maxX=-Infinity;
-  let minY=Infinity,maxY=-Infinity;
-
-  cells.forEach(c=>{
-    minX=Math.min(minX,c.x);
-    maxX=Math.max(maxX,c.x+c.dx);
-    minY=Math.min(minY,c.y);
-    maxY=Math.max(maxY,c.y+c.dy);
-  });
-
-  borders.forEach(line=>{
-    line.forEach(([x,y])=>{
-      minX=Math.min(minX,x);
-      maxX=Math.max(maxX,x);
-      minY=Math.min(minY,y);
-      maxY=Math.max(maxY,y);
-    });
-  });
-
-  const rx=maxX-minX;
-  const ry=maxY-minY;
-
-  scale=Math.min(canvas.width/rx,canvas.height/ry)*0.9;
-
-  offsetX=canvas.width/2-(minX+rx/2)*scale;
-  offsetY=canvas.height/2+(minY+ry/2)*scale;
-}
-
-
-// --------------------------------
-// Draw
-// --------------------------------
-function draw(){
-
-  ctx.setTransform(1,0,0,1,0,0);
-  ctx.clearRect(0,0,canvas.width,canvas.height);
-
-  ctx.setTransform(scale,0,0,-scale,offsetX,offsetY);
-
-  // cells
-  cells.forEach(c=>{
-    ctx.fillStyle=probToColor(c.prob);
-    ctx.fillRect(c.x,c.y,c.dx,c.dy);
-  });
-
-  // SPC-style gray borders
-  ctx.strokeStyle="#A9A9A9";
-  ctx.lineWidth=1/scale;
-
-  ctx.beginPath();
-
-  borders.forEach(line=>{
-    line.forEach(([x,y],i)=>{
-      if(i===0)ctx.moveTo(x,y);
-      else ctx.lineTo(x,y);
-    });
-  });
-
-  ctx.stroke();
-}
-
-
-// --------------------------------
-// Screen to LCC
-// --------------------------------
-function screenToLCC(px,py){
-  return{
-    x:(px-offsetX)/scale,
-    y:-(py-offsetY)/scale
-  };
-}
-
-
-// --------------------------------
-// Tooltip
-// --------------------------------
-canvas.addEventListener("mousemove",e=>{
-
-  const {x,y}=screenToLCC(e.offsetX,e.offsetY);
-
-  let hit=null;
-
-  for(const c of cells){
-    if(x>=c.x && x<=c.x+c.dx && y>=c.y && y<=c.y+c.dy){
-      hit=c;
-      break;
     }
-  }
 
-  if(hit){
-    tooltip.style.display="block";
-    tooltip.style.left=(e.pageX+12)+"px";
-    tooltip.style.top=(e.pageY+12)+"px";
-    tooltip.innerHTML=`Probability: ${(hit.prob*100).toFixed(4)}%`;
-  }
-  else{
-    tooltip.style.display="none";
-  }
-});
+    return false;
+}
 
 
-// --------------------------------
-// Zoom
-// --------------------------------
-canvas.addEventListener("wheel",e=>{
+// ---------------- LOAD CELLS ----------------
 
-  e.preventDefault();
+function loadCells() {
 
-  const z=e.deltaY<0?1.15:0.87;
+    fetch("rap_cells.json")
+    .then(res => res.json())
+    .then(cells => {
 
-  offsetX=e.offsetX-z*(e.offsetX-offsetX);
-  offsetY=e.offsetY-z*(e.offsetY-offsetY);
+        cells.forEach(cell => {
 
-  scale*=z;
+            const bounds = L.latLngBounds(
 
-  draw();
-});
+                [cell.lat_min, cell.lon_min],
+                [cell.lat_max, cell.lon_max]
+
+            );
+
+            // STRICT CONUS CLIP
+            if (!isCellInCONUS(bounds)) return;
+
+            L.rectangle(bounds, {
+
+                fillColor: getColor(cell.prob),
+                fillOpacity: 0.6,
+                stroke: false
+
+            }).addTo(map);
+
+        });
+
+    });
+
+}
 
 
-// --------------------------------
-// Pan
-// --------------------------------
-canvas.addEventListener("mousedown",e=>{
-  dragging=true;
-  lastX=e.clientX;
-  lastY=e.clientY;
-});
+// ---------------- VALID TIME FIX ----------------
 
-window.addEventListener("mouseup",()=>dragging=false);
+fetch("rap_metadata.json")
+.then(res => res.json())
+.then(meta => {
 
-window.addEventListener("mousemove",e=>{
+    const start = meta.valid_start; // example: 18:00
+    const end = meta.valid_end;     // example: 19:00
 
-  if(!dragging)return;
+    document.getElementById("validTime").innerText =
+        `${start}-${end} UTC`;
 
-  offsetX+=e.clientX-lastX;
-  offsetY+=e.clientY-lastY;
-
-  lastX=e.clientX;
-  lastY=e.clientY;
-
-  draw();
 });
 
 </script>
