@@ -1,16 +1,15 @@
 import geopandas as gpd
 import json
 import zipfile, io, requests
-from shapely.geometry import box
+from shapely.geometry import box, Point
 from shapely.ops import unary_union
-from shapely.prepared import prep
 from pyproj import CRS
 
 # -----------------------------
 # Paths
 # -----------------------------
 CELLS_IN = "map/data/tornado_prob_lcc.json"       # raw RAP cells
-CELLS_OUT = "map/data/tornado_prob_lcc_masked.json"
+CELLS_OUT = "map/data/tornado_prob_lcc_masked.json"  # filtered output
 BORDERS_OUT = "map/data/borders_lcc.json"
 CENSUS_URL = "https://www2.census.gov/geo/tiger/GENZ2024/shp/cb_2024_us_state_5m.zip"
 TMP_DIR = "tmp_census"
@@ -37,7 +36,7 @@ lower48 = [
 gdf = gdf[gdf['STUSPS'].isin(lower48)]
 
 # -----------------------------
-# Build RAP CRS
+# Load RAP cells JSON
 # -----------------------------
 with open(CELLS_IN) as f:
     cells_data = json.load(f)
@@ -53,18 +52,8 @@ rap_crs = CRS.from_proj4(
 # -----------------------------
 gdf_lcc = gdf.to_crs(rap_crs)
 
-# Merge into polygons and take only the largest polygon (mainland CONUS)
-all_polys = []
-for geom in gdf_lcc.geometry:
-    if geom.geom_type == "Polygon":
-        all_polys.append(geom)
-    elif geom.geom_type == "MultiPolygon":
-        all_polys.extend(list(geom.geoms))
-
-# Sort polygons by area descending and pick the largest one (mainland)
-all_polys.sort(key=lambda g: g.area, reverse=True)
-us_poly = all_polys[0]
-prepared_us = prep(us_poly)
+# Merge into single mainland polygon
+mainland_poly = unary_union(gdf_lcc.geometry)
 
 # -----------------------------
 # Export lower-48 borders
@@ -79,11 +68,10 @@ for geom in gdf_lcc.geometry:
 
 with open(BORDERS_OUT, "w") as f:
     json.dump({"features": features}, f)
-
 print(f"Saved {len(features)} lower-48 borders to {BORDERS_OUT}")
 
 # -----------------------------
-# Filter tornado cells to CONUS (inside or touching largest polygon)
+# Filter tornado cells to CONUS (centroid must be inside mainland polygon)
 # -----------------------------
 filtered_cells = []
 for c in cells_data["features"]:
@@ -91,14 +79,17 @@ for c in cells_data["features"]:
     y = c["y"]
     w = c["dx"]
     h = c["dy"]
-    cell_poly = box(x, y, x+w, y+h)
-    if prepared_us.intersects(cell_poly):
+    centroid = Point(x + w/2, y + h/2)
+    if mainland_poly.contains(centroid):
         filtered_cells.append(c)
 
+# -----------------------------
+# Save filtered (masked) cells
+# -----------------------------
 cells_data["features"] = filtered_cells
-
 with open(CELLS_OUT, "w") as f:
     json.dump(cells_data, f)
 
-print(f"Kept {len(filtered_cells)} cells that touch or are inside mainland CONUS")
+print(f"Kept {len(filtered_cells)} cells inside mainland CONUS")
+print(f"Saved masked cells to {CELLS_OUT}")
 print("DONE")
