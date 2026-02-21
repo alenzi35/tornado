@@ -4,7 +4,7 @@ import zipfile, io, requests
 from shapely.geometry import box
 from shapely.ops import unary_union
 from shapely.prepared import prep
-from pyproj import CRS, Transformer
+from pyproj import CRS
 
 # -----------------------------
 # Paths
@@ -18,6 +18,7 @@ TMP_DIR = "tmp_census"
 # -----------------------------
 # Download + unzip Census shapefile
 # -----------------------------
+print("Downloading US Census lower-48 states shapefile...")
 resp = requests.get(CENSUS_URL)
 resp.raise_for_status()
 z = zipfile.ZipFile(io.BytesIO(resp.content))
@@ -40,6 +41,7 @@ gdf = gdf[gdf['STUSPS'].isin(lower48)]
 # -----------------------------
 with open(CELLS_IN) as f:
     cells_data = json.load(f)
+
 p = cells_data["projection"]
 rap_crs = CRS.from_proj4(
     f"+proj=lcc +lat_1={p['lat_1']} +lat_2={p['lat_2']} +lat_0={p['lat_0']} "
@@ -50,7 +52,18 @@ rap_crs = CRS.from_proj4(
 # Reproject borders
 # -----------------------------
 gdf_lcc = gdf.to_crs(rap_crs)
-us_poly = unary_union(gdf_lcc.geometry)
+
+# Merge into polygons and take only the largest polygon (mainland CONUS)
+all_polys = []
+for geom in gdf_lcc.geometry:
+    if geom.geom_type == "Polygon":
+        all_polys.append(geom)
+    elif geom.geom_type == "MultiPolygon":
+        all_polys.extend(list(geom.geoms))
+
+# Sort polygons by area descending and pick the largest one (mainland)
+all_polys.sort(key=lambda g: g.area, reverse=True)
+us_poly = all_polys[0]
 prepared_us = prep(us_poly)
 
 # -----------------------------
@@ -63,12 +76,14 @@ for geom in gdf_lcc.geometry:
     elif geom.geom_type == "MultiPolygon":
         for poly in geom.geoms:
             features.append(list(poly.exterior.coords))
+
 with open(BORDERS_OUT, "w") as f:
     json.dump({"features": features}, f)
+
 print(f"Saved {len(features)} lower-48 borders to {BORDERS_OUT}")
 
 # -----------------------------
-# Filter tornado cells to CONUS (inside or touching)
+# Filter tornado cells to CONUS (inside or touching largest polygon)
 # -----------------------------
 filtered_cells = []
 for c in cells_data["features"]:
@@ -81,6 +96,9 @@ for c in cells_data["features"]:
         filtered_cells.append(c)
 
 cells_data["features"] = filtered_cells
+
 with open(CELLS_OUT, "w") as f:
     json.dump(cells_data, f)
-print(f"Kept {len(filtered_cells)} cells that touch or are inside CONUS")
+
+print(f"Kept {len(filtered_cells)} cells that touch or are inside mainland CONUS")
+print("DONE")
