@@ -11,15 +11,13 @@ import io
 import geopandas as gpd
 from shapely.geometry import box
 from shapely.prepared import prep
-from shapely.ops import unary_union
-
 from pyproj import Proj
 
 # ================= CONFIG =================
+
 DATA_DIR = "data"
 GRIB_PATH = "data/rap.grib2"
 OUTPUT_JSON = "map/data/tornado_prob_lcc.json"
-BORDERS_OUT = "map/data/borders_lcc.json"
 
 INTERCEPT = -14
 COEFFS = {
@@ -28,13 +26,14 @@ COEFFS = {
     "HLCY": 8.85192696e-03
 }
 
-COUNTRIES_URL = "https://naturalearth.s3.amazonaws.com/50m_cultural/ne_50m_admin_0_countries.zip"
-LAKES_URL = "https://naturalearth.s3.amazonaws.com/50m_physical/ne_50m_lakes.zip"
+# US Census lower 48 states 5m shapefile
+CONUS_SHAPE_URL = "https://www2.census.gov/geo/tiger/GENZ2024/shp/cb_2024_us_state_5m.zip"
 
 os.makedirs(DATA_DIR, exist_ok=True)
 os.makedirs("map/data", exist_ok=True)
 
 # ================= TIME LOGIC =================
+
 def get_target_cycle():
     now = datetime.datetime.utcnow()
     run_time = now - datetime.timedelta(hours=1)
@@ -45,12 +44,12 @@ def get_target_cycle():
 DATE, HOUR = get_target_cycle()
 FCST = "01"
 
-# ================= URL =================
+# ================= DOWNLOAD RAP =================
+
 RAP_URL = f"https://noaa-rap-pds.s3.amazonaws.com/rap.{DATE}/rap.t{HOUR}z.awip32f{FCST}.grib2"
 print("Target:", DATE, HOUR, "F01")
 print("URL:", RAP_URL)
 
-# ================= CHECK FILE EXISTS =================
 def url_exists(url):
     r = requests.head(url)
     return r.status_code == 200
@@ -59,10 +58,11 @@ if not url_exists(RAP_URL):
     print("RAP file not ready yet. Skipping.")
     exit(0)
 
-print("RAP file available. Processing.")
 urllib.request.urlretrieve(RAP_URL, GRIB_PATH)
+print("Downloaded RAP GRIB2")
 
 # ================= LOAD GRIB =================
+
 grbs = pygrib.open(GRIB_PATH)
 
 def pick_var(grbs, shortname, typeOfLevel=None, bottom=None, top=None):
@@ -105,11 +105,13 @@ proj_lcc = Proj(
 
 x_vals, y_vals = proj_lcc(lons, lats)
 
-# ================= PROBABILITY =================
+# ================= CALC PROB =================
+
 linear = INTERCEPT + COEFFS["CAPE"]*cape + COEFFS["CIN"]*cin + COEFFS["HLCY"]*hlcy
 prob = 1 / (1 + np.exp(-linear))
 
-# ================= DOWNLOAD SHAPEFILES =================
+# ================= DOWNLOAD CONUS SHAPE =================
+
 def download_shapefile(url, folder):
     resp = requests.get(url)
     resp.raise_for_status()
@@ -118,74 +120,46 @@ def download_shapefile(url, folder):
     shp_file = [f for f in z.namelist() if f.endswith(".shp")][0]
     return gpd.read_file(f"{folder}/{shp_file}")
 
-print("Downloading country borders...")
-countries = download_shapefile(COUNTRIES_URL, "tmp_countries")
-print("Downloading lakes...")
-lakes = download_shapefile(LAKES_URL, "tmp_lakes")
+print("Downloading CONUS shapefile...")
+states_gdf = download_shapefile(CONUS_SHAPE_URL, "tmp_conus")
 
-# ================= BUILD CONUS MASK =================
-print("Building CONUS mask...")
+# Keep only lower 48 states
+lower48 = states_gdf[~states_gdf["STUSPS"].isin(["AK","HI","PR"])]
 
-usa = countries[countries["ADMIN"] == "United States of America"]
+# Project to RAP LCC
+lower48_lcc = lower48.to_crs(proj_lcc.srs)
 
-great_lakes_names = [
-    "Lake Superior", "Lake Michigan", "Lake Huron", "Lake Erie", "Lake Ontario"
-]
-
-great_lakes = lakes[lakes["name"].isin(great_lakes_names)]
-
-usa_geom = usa.geometry.unary_union
-lakes_geom = great_lakes.geometry.unary_union
-
-conus_geom = usa_geom.difference(lakes_geom)
-
-# ================= EXPORT CONUS BORDER =================
-print("Exporting CONUS borders...")
-conus_gdf = gpd.GeoSeries([conus_geom], crs="EPSG:4326").to_crs(proj_lcc.srs)
-features_border = []
-for geom in conus_gdf:
-    if geom.geom_type == "Polygon":
-        features_border.append(list(geom.exterior.coords))
-    elif geom.geom_type == "MultiPolygon":
-        for poly in geom.geoms:
-            features_border.append(list(poly.exterior.coords))
-
-with open(BORDERS_OUT, "w") as f:
-    json.dump({"features": features_border}, f)
-
-print("Saved borders.")
-
-# ================= PREPARE MASK =================
-prepared_conus = prep(conus_gdf.iloc[0])
+# Merge into a single CONUS polygon
+conus_poly = lower48_lcc.unary_union
+prepared_conus = prep(conus_poly)
 
 # ================= FILTER CELLS =================
-print("Filtering grid cells touching or inside CONUS outline...")
 
+print("Filtering grid cells to CONUS (intersects polygon)...")
 features = []
 rows, cols = prob.shape
 
 for i in range(rows):
     for j in range(cols):
-        x = x_vals[i, j]
-        y = y_vals[i, j]
-
-        dx = abs(x_vals[i, j+1] - x) if j < cols-1 else abs(x - x_vals[i, j-1])
-        dy = abs(y_vals[i+1, j] - y) if i < rows-1 else abs(y - y_vals[i-1, j])
-
-        cell_poly = box(x, y, x+dx, y+dy)
-
-        if prepared_conus.intersects(cell_poly):
+        x = x_vals[i,j]
+        y = y_vals[i,j]
+        dx = x_vals[i,j+1] - x if j < cols-1 else x - x_vals[i,j-1]
+        dy = y_vals[i+1,j] - y if i < rows-1 else y - y_vals[i-1,j]
+        dx, dy = abs(dx), abs(dy)
+        cell_box = box(x, y, x+dx, y+dy)
+        if prepared_conus.intersects(cell_box):
             features.append({
                 "x": float(x),
                 "y": float(y),
                 "dx": float(dx),
                 "dy": float(dy),
-                "prob": float(prob[i, j])
+                "prob": float(prob[i,j])
             })
 
-print(f"Kept {len(features)} CONUS cells.")
+print(f"Kept {len(features)} cells inside or touching CONUS.")
 
 # ================= OUTPUT =================
+
 valid_start = f"{int(HOUR):02d}:00"
 valid_end = f"{(int(HOUR)+1)%24:02d}:00"
 
@@ -194,7 +168,7 @@ output = {
     "run_hour": HOUR,
     "forecast": "F01",
     "valid": f"{valid_start}-{valid_end} UTC",
-    "generated": datetime.datetime.utcnow().isoformat() + "Z",
+    "generated": datetime.datetime.utcnow().isoformat()+"Z",
     "projection": params,
     "features": features
 }
@@ -203,4 +177,4 @@ with open(OUTPUT_JSON, "w") as f:
     json.dump(output, f)
 
 print("Saved:", OUTPUT_JSON)
-print("Done.")
+print("DONE.")
