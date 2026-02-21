@@ -1,70 +1,51 @@
-import json
+import geopandas as gpd
+import requests
 import zipfile
 import io
-import requests
-
-import geopandas as gpd
-import xarray as xr
-
-from shapely.geometry import box, Point
+import json
+import math
+from pyproj import CRS, Transformer
+from shapely.geometry import shape, box, Point
 from shapely.ops import unary_union
 
-from pyproj import CRS, Transformer, Proj
 
-
-# =====================================================
+# ============================================================
 # CONFIG
-# =====================================================
+# ============================================================
 
-US_STATES_URL = "https://www2.census.gov/geo/tiger/GENZ2023/shp/cb_2023_us_state_20m.zip"
+BORDERS_OUT = "map/data/borders_lcc.json"
+CELLS_IN = "map/data/tornado_prob_lcc.json"
+CELLS_OUT = "map/data/tornado_prob_lcc_masked.json"
 
-INPUT_CELLS = "map/data/tornado_prob_lcc.json"
-
-OUTPUT_BORDERS = "map/data/us_borders_lcc.json"
-OUTPUT_CELLS = "map/data/tornado_prob_lcc_filtered.json"
-
-RAP_FILE = "map/data/rap_latlon.nc"
+# US Census states (correct lakes, no Michigan absorption)
+CENSUS_URL = "https://www2.census.gov/geo/tiger/GENZ2023/shp/cb_2023_us_state_20m.zip"
 
 DALLAS_LAT = 32.7767
 DALLAS_LON = -96.7970
 
 
-# =====================================================
-# DOWNLOAD + LOAD SHAPEFILE
-# =====================================================
-
-def download_shapefile(url):
-    print(f"Downloading {url}")
-
-    resp = requests.get(url)
-    resp.raise_for_status()
-
-    z = zipfile.ZipFile(io.BytesIO(resp.content))
-
-    z.extractall("tmp_us_states")
-
-    shp = [f for f in z.namelist() if f.endswith(".shp")][0]
-
-    return gpd.read_file(f"tmp_us_states/{shp}")
-
-
-# =====================================================
-# GET RAP CRS
-# =====================================================
+# ============================================================
+# LOAD RAP CRS
+# ============================================================
 
 def get_rap_crs():
 
-    ds = xr.open_dataset(RAP_FILE)
+    print("Loading RAP CRS from tornado_prob_lcc.json")
 
-    proj = ds["LambertConformal_Projection"]
+    with open(CELLS_IN) as f:
+        data = json.load(f)
+
+    p = data["projection"]
 
     crs = CRS.from_proj4(
         f"+proj=lcc "
-        f"+lat_1={proj.standard_parallel.values[0]} "
-        f"+lat_2={proj.standard_parallel.values[1]} "
-        f"+lat_0={proj.latitude_of_projection_origin.values} "
-        f"+lon_0={proj.longitude_of_central_meridian.values} "
-        f"+a=6371229 +b=6371229"
+        f"+lat_1={p['lat_1']} "
+        f"+lat_2={p['lat_2']} "
+        f"+lat_0={p['lat_0']} "
+        f"+lon_0={p['lon_0']} "
+        f"+a={p.get('a',6371229)} "
+        f"+b={p.get('b',6371229)} "
+        f"+units=m +no_defs"
     )
 
     print("RAP CRS loaded")
@@ -72,164 +53,157 @@ def get_rap_crs():
     return crs
 
 
-# =====================================================
-# CONVERT GEOMETRY TO LCC
-# =====================================================
+# ============================================================
+# DOWNLOAD CENSUS STATES
+# ============================================================
 
-def convert_to_lcc(gdf, rap_crs):
+def download_states():
 
-    transformer = Transformer.from_crs(
-        "EPSG:4326",
-        rap_crs,
-        always_xy=True
-    )
+    print("Downloading Census states shapefile...")
 
-    gdf = gdf.to_crs(rap_crs)
+    resp = requests.get(CENSUS_URL)
+    resp.raise_for_status()
+
+    z = zipfile.ZipFile(io.BytesIO(resp.content))
+    z.extractall("tmp_states")
+
+    shp = "tmp_states/cb_2023_us_state_20m.shp"
+
+    gdf = gpd.read_file(shp)
+
+    print("States loaded:", len(gdf))
 
     return gdf
 
 
-# =====================================================
-# LOAD CELLS
-# =====================================================
+# ============================================================
+# BUILD US POLYGON
+# ============================================================
 
-def load_cells():
+def build_us_polygon(gdf, rap_crs):
 
-    with open(INPUT_CELLS) as f:
+    print("Reprojecting states to RAP CRS...")
+
+    gdf = gdf.to_crs(rap_crs)
+
+    print("Building unified US polygon...")
+
+    us_poly = unary_union(gdf.geometry)
+
+    return us_poly, gdf
+
+
+# ============================================================
+# EXPORT BORDERS
+# ============================================================
+
+def export_borders(gdf):
+
+    features = []
+
+    for geom in gdf.geometry:
+
+        if geom.geom_type == "Polygon":
+
+            coords = list(geom.exterior.coords)
+            features.append(coords)
+
+        elif geom.geom_type == "MultiPolygon":
+
+            for poly in geom.geoms:
+                coords = list(poly.exterior.coords)
+                features.append(coords)
+
+    out = {
+        "features": features
+    }
+
+    with open(BORDERS_OUT, "w") as f:
+        json.dump(out, f)
+
+    print("Saved borders:", len(features))
+
+
+# ============================================================
+# FILTER CELLS BY OUTLINE
+# ============================================================
+
+def filter_cells(us_poly):
+
+    print("Loading cells...")
+
+    with open(CELLS_IN) as f:
         data = json.load(f)
 
-    return data["features"]
+    cells = data["features"]
 
-
-# =====================================================
-# FILTER CELLS BY US GEOMETRY
-# =====================================================
-
-def filter_cells(cells, us_geom):
+    print("Cells before:", len(cells))
 
     filtered = []
 
+    dallas_cell = None
+    best_dist = 1e30
+
+    transformer = Transformer.from_crs("EPSG:4326", get_rap_crs(), always_xy=True)
+
+    dx, dy = transformer.transform(DALLAS_LON, DALLAS_LAT)
+
+    print("Dallas projected:", dx, dy)
+
     for c in cells:
 
-        dx = c.get("dx", 13545)
-        dy = c.get("dy", 13545)
+        x = c["x"]
+        y = c["y"]
+        w = c["dx"]
+        h = c["dy"]
 
-        poly = box(
-            c["x"],
-            c["y"],
-            c["x"] + dx,
-            c["y"] + dy
-        )
+        cell_poly = box(x, y, x+w, y+h)
 
-        if poly.intersects(us_geom):
+        if cell_poly.intersects(us_poly):
+
+            c["inside"] = True
             filtered.append(c)
 
-    print(f"Cells before: {len(cells)}")
-    print(f"Cells after: {len(filtered)}")
+            cx = x + w/2
+            cy = y + h/2
 
-    return filtered
+            dist = math.hypot(cx - dx, cy - dy)
 
+            if dist < best_dist:
+                best_dist = dist
+                dallas_cell = c
 
-# =====================================================
-# FIND DALLAS CELL
-# =====================================================
+    print("Cells after:", len(filtered))
 
-def highlight_dallas(cells, rap_crs):
+    if dallas_cell:
+        dallas_cell["dallas"] = True
+        print("Dallas cell:", dallas_cell["x"], dallas_cell["y"])
 
-    proj = Proj(rap_crs)
+    data["features"] = filtered
 
-    lon360 = DALLAS_LON if DALLAS_LON >= 0 else 360 + DALLAS_LON
+    with open(CELLS_OUT, "w") as f:
+        json.dump(data, f)
 
-    x, y = proj(lon360, DALLAS_LAT)
-
-    print(f"Dallas projected: x={x:.2f}, y={y:.2f}")
-
-    closest = None
-    closest_dist = 1e30
-
-    for c in cells:
-
-        dx = c.get("dx", 13545)
-        dy = c.get("dy", 13545)
-
-        cx = c["x"] + dx / 2
-        cy = c["y"] + dy / 2
-
-        dist = (cx - x)**2 + (cy - y)**2
-
-        if dist < closest_dist:
-            closest_dist = dist
-            closest = c
-
-    for c in cells:
-        c["highlight"] = False
-
-    if closest:
-        closest["highlight"] = True
-        print(
-            f'Dallas cell: x={closest["x"]}, y={closest["y"]}'
-        )
-
-    return cells
+    print("Saved masked cells")
 
 
-# =====================================================
-# SAVE GEOJSON
-# =====================================================
-
-def save_borders(gdf):
-
-    geojson = json.loads(gdf.to_json())
-
-    with open(OUTPUT_BORDERS, "w") as f:
-        json.dump(geojson, f)
-
-    print("Saved borders")
-
-
-def save_cells(cells):
-
-    geojson = {
-        "type": "FeatureCollection",
-        "features": cells
-    }
-
-    with open(OUTPUT_CELLS, "w") as f:
-        json.dump(geojson, f)
-
-    print("Saved filtered cells")
-
-
-# =====================================================
+# ============================================================
 # MAIN
-# =====================================================
+# ============================================================
 
 def main():
 
     rap_crs = get_rap_crs()
 
-    states = download_shapefile(US_STATES_URL)
+    states = download_states()
 
-    # remove Alaska, Hawaii, territories
-    states = states[
-        ~states["STUSPS"].isin(
-            ["AK", "HI", "PR", "GU", "VI", "MP", "AS"]
-        )
-    ]
+    us_poly, states_lcc = build_us_polygon(states, rap_crs)
 
-    states_lcc = convert_to_lcc(states, rap_crs)
+    export_borders(states_lcc)
 
-    us_geom = unary_union(states_lcc.geometry)
+    filter_cells(us_poly)
 
-    save_borders(states_lcc)
-
-    cells = load_cells()
-
-    cells = filter_cells(cells, us_geom)
-
-    cells = highlight_dallas(cells, rap_crs)
-
-    save_cells(cells)
+    print("DONE")
 
 
 if __name__ == "__main__":
