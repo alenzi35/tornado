@@ -28,7 +28,14 @@ COEFFS = {
     "HLCY": 8.85192696e-03
 }
 
-COUNTRIES_URL = "https://naturalearth.s3.amazonaws.com/50m_cultural/ne_50m_admin_0_countries.zip"
+US_STATES_URL = "https://www2.census.gov/geo/tiger/GENZ2024/shp/cb_2024_us_state_5m.zip"
+GREAT_LAKES_NAMES = [
+    "Lake Superior",
+    "Lake Michigan",
+    "Lake Huron",
+    "Lake Erie",
+    "Lake Ontario"
+]
 LAKES_URL = "https://naturalearth.s3.amazonaws.com/50m_physical/ne_50m_lakes.zip"
 
 os.makedirs(DATA_DIR, exist_ok=True)
@@ -46,17 +53,12 @@ def get_target_cycle():
 DATE, HOUR = get_target_cycle()
 FCST = "01"
 
-# ================= URL =================
+# ================= RAP URL =================
 
-RAP_URL = (
-    f"https://noaa-rap-pds.s3.amazonaws.com/"
-    f"rap.{DATE}/rap.t{HOUR}z.awip32f{FCST}.grib2"
-)
+RAP_URL = f"https://noaa-rap-pds.s3.amazonaws.com/rap.{DATE}/rap.t{HOUR}z.awip32f{FCST}.grib2"
 
 print("Target:", DATE, HOUR, "F01")
 print("URL:", RAP_URL)
-
-# ================= CHECK FILE EXISTS =================
 
 def url_exists(url):
     r = requests.head(url)
@@ -66,11 +68,8 @@ if not url_exists(RAP_URL):
     print("RAP file not ready yet. Skipping.")
     exit(0)
 
-print("RAP file available. Processing.")
-
-# ================= DOWNLOAD =================
-
 urllib.request.urlretrieve(RAP_URL, GRIB_PATH)
+print("RAP downloaded.")
 
 # ================= LOAD GRIB =================
 
@@ -101,12 +100,7 @@ cape = np.nan_to_num(cape_msg.values)
 cin = np.nan_to_num(cin_msg.values)
 hlcy = np.nan_to_num(hlcy_msg.values)
 
-# ================= LAT/LON =================
-
 lats, lons = cape_msg.latlons()
-
-# ================= PROJECTION =================
-
 params = cape_msg.projparams
 
 proj_lcc = Proj(
@@ -121,12 +115,12 @@ proj_lcc = Proj(
 
 x_vals, y_vals = proj_lcc(lons, lats)
 
-# ================= PROB =================
+# ================= PROBABILITY =================
 
 linear = INTERCEPT + COEFFS["CAPE"] * cape + COEFFS["CIN"] * cin + COEFFS["HLCY"] * hlcy
 prob = 1 / (1 + np.exp(-linear))
 
-# ================= LOAD CONUS MASK =================
+# ================= DOWNLOAD SHAPEFILES =================
 
 def download_shapefile(url, folder):
     resp = requests.get(url)
@@ -136,74 +130,56 @@ def download_shapefile(url, folder):
     shp_file = [f for f in z.namelist() if f.endswith(".shp")][0]
     return gpd.read_file(f"{folder}/{shp_file}")
 
-print("Downloading country borders...")
-countries = download_shapefile(COUNTRIES_URL, "tmp_countries")
+print("Downloading US states shapefile...")
+states = download_shapefile(US_STATES_URL, "tmp_states")
 
-print("Downloading lakes...")
+print("Downloading lakes shapefile...")
 lakes = download_shapefile(LAKES_URL, "tmp_lakes")
 
-print("Building CONUS mask...")
+# ================= BUILD CONUS POLYGON =================
 
-usa = countries[countries["ADMIN"] == "United States of America"]
+# Only mainland states
+lower48 = states[~states["STUSPS"].isin(["AK", "HI", "PR"])]
+usa_geom = lower48.geometry.unary_union
 
-great_lakes_names = [
-    "Lake Superior",
-    "Lake Michigan",
-    "Lake Huron",
-    "Lake Erie",
-    "Lake Ontario"
-]
-
-great_lakes = lakes[lakes["name"].isin(great_lakes_names)]
-
-usa_geom = usa.geometry.unary_union
+# Remove Great Lakes
+great_lakes = lakes[lakes["name"].isin(GREAT_LAKES_NAMES)]
 lakes_geom = great_lakes.geometry.unary_union
 
 conus_geom = usa_geom.difference(lakes_geom)
 
-# ================= REPROJECT MASK =================
-
+# Reproject to LCC
 conus_lcc = gpd.GeoSeries([conus_geom], crs="EPSG:4326").to_crs(proj_lcc.srs).iloc[0]
 prepared_conus = prep(conus_lcc)
-
 print("CONUS mask ready.")
 
 # ================= FILTER GRID CELLS =================
 
-print("Filtering grid cells...")
+print("Filtering grid cells to CONUS...")
 
 features = []
-
 rows, cols = prob.shape
 
 for i in range(rows):
     for j in range(cols):
         x = x_vals[i, j]
         y = y_vals[i, j]
-
         dx = x_vals[i, j+1] - x if j < cols-1 else x - x_vals[i, j-1]
         dy = y_vals[i+1, j] - y if i < rows-1 else y - y_vals[i-1, j]
-
-        dx = abs(dx)
-        dy = abs(dy)
-
-        cell = box(x, y, x + dx, y + dy)
-
-        # STRICT: keep only if centroid inside CONUS
-        if not prepared_conus.contains(cell.centroid):
-            continue
-
-        features.append({
-            "x": float(x),
-            "y": float(y),
-            "dx": float(dx),
-            "dy": float(dy),
-            "prob": float(prob[i, j])
-        })
+        dx, dy = abs(dx), abs(dy)
+        cell_poly = box(x, y, x + dx, y + dy)
+        if prepared_conus.intersects(cell_poly):
+            features.append({
+                "x": float(x),
+                "y": float(y),
+                "dx": float(dx),
+                "dy": float(dy),
+                "prob": float(prob[i, j])
+            })
 
 print(f"Kept {len(features)} CONUS cells.")
 
-# ================= OUTPUT =================
+# ================= OUTPUT JSON =================
 
 valid_start = f"{int(HOUR):02d}:00"
 valid_end = f"{(int(HOUR)+1)%24:02d}:00"
