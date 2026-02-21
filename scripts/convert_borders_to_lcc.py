@@ -1,15 +1,15 @@
 import geopandas as gpd
 import json
 import zipfile, io, requests
-from shapely.geometry import box, Point
+from shapely.geometry import box
 from shapely.ops import unary_union
 from shapely.prepared import prep
-from pyproj import CRS, Transformer
+from pyproj import CRS
 
 # -----------------------------
 # Paths
 # -----------------------------
-CELLS_IN = "map/data/tornado_prob_lcc.json"       # raw RAP cells
+CELLS_IN = "map/data/tornado_prob_lcc.json"
 BORDERS_OUT = "map/data/borders_lcc.json"
 CENSUS_URL = "https://www2.census.gov/geo/tiger/GENZ2024/shp/cb_2024_us_state_5m.zip"
 TMP_DIR = "tmp_census"
@@ -39,6 +39,7 @@ gdf = gdf[gdf['STUSPS'].isin(lower48)]
 # -----------------------------
 with open(CELLS_IN) as f:
     cells_data = json.load(f)
+
 p = cells_data["projection"]
 rap_crs = CRS.from_proj4(
     f"+proj=lcc +lat_1={p['lat_1']} +lat_2={p['lat_2']} +lat_0={p['lat_0']} "
@@ -67,7 +68,7 @@ with open(BORDERS_OUT, "w") as f:
 print(f"Saved {len(features)} lower-48 borders to {BORDERS_OUT}")
 
 # -----------------------------
-# Filter tornado cells to CONUS (inside or touching polygon)
+# Filter tornado cells to CONUS polygon (inside or touching)
 # -----------------------------
 filtered_cells = []
 for c in cells_data["features"]:
@@ -76,31 +77,18 @@ for c in cells_data["features"]:
     w = c["dx"]
     h = c["dy"]
     cell_poly = box(x, y, x+w, y+h)
+    # keep only cells that touch the prepared CONUS polygon
     if prepared_us.intersects(cell_poly):
         filtered_cells.append(c)
 
-print(f"Kept {len(filtered_cells)} cells touching or inside CONUS polygon")
+print(f"Cells touching or inside CONUS polygon: {len(filtered_cells)}")
 
 # -----------------------------
-# Remove outlier cells using lat/lon bounds
+# Write filtered cells back to JSON
 # -----------------------------
-transformer = Transformer.from_crs(rap_crs, "EPSG:4326", always_xy=True)
-final_cells = []
-
-for c in filtered_cells:
-    x = c["x"] + c["dx"]/2
-    y = c["y"] + c["dy"]/2
-    lon, lat = transformer.transform(x, y)
-    if -125 <= lon <= -65 and 24 <= lat <= 50:  # CONUS bounds
-        final_cells.append(c)
-
-cells_data["features"] = final_cells
-
-# -----------------------------
-# Write back to JSON
-# -----------------------------
+cells_data["features"] = filtered_cells
 with open(CELLS_IN, "w") as f:
     json.dump(cells_data, f)
 
-print(f"Final cell count after CONUS lat/lon filtering: {len(final_cells)}")
+print(f"Final cell count written to {CELLS_IN}")
 print("Done.")
