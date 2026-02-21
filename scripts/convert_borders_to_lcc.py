@@ -3,7 +3,6 @@ import json
 import zipfile, io, requests
 from shapely.geometry import box
 from shapely.ops import unary_union
-from shapely.prepared import prep
 from pyproj import CRS
 
 # -----------------------------
@@ -51,7 +50,6 @@ rap_crs = CRS.from_proj4(
 # -----------------------------
 gdf_lcc = gdf.to_crs(rap_crs)
 us_poly = unary_union(gdf_lcc.geometry)
-prepared_us = prep(us_poly)
 
 # -----------------------------
 # Export lower-48 borders
@@ -68,7 +66,13 @@ with open(BORDERS_OUT, "w") as f:
 print(f"Saved {len(features)} lower-48 borders to {BORDERS_OUT}")
 
 # -----------------------------
-# Filter tornado cells to CONUS polygon (inside or touching)
+# Build bounding box for CONUS in LCC coordinates
+# -----------------------------
+minx, miny, maxx, maxy = us_poly.bounds
+bbox = box(minx, miny, maxx, maxy)
+
+# -----------------------------
+# Filter tornado cells to bounding box
 # -----------------------------
 filtered_cells = []
 for c in cells_data["features"]:
@@ -77,11 +81,10 @@ for c in cells_data["features"]:
     w = c["dx"]
     h = c["dy"]
     cell_poly = box(x, y, x+w, y+h)
-    # keep only cells that touch the prepared CONUS polygon
-    if prepared_us.intersects(cell_poly):
+    if bbox.intersects(cell_poly):
         filtered_cells.append(c)
 
-print(f"Cells touching or inside CONUS polygon: {len(filtered_cells)}")
+print(f"Cells inside CONUS bounding box: {len(filtered_cells)}")
 
 # -----------------------------
 # Write filtered cells back to JSON
