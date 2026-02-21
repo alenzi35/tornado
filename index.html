@@ -96,13 +96,9 @@ fetch("map/data/tornado_prob_lcc.json")
   .then(r => r.json())
   .then(data => {
 
-    // Filter cells to CONUS bounding box (rough LCC bounds)
-    cells = data.features.filter(c => 
-      c.x >= -2300000 && c.x <= 2300000 &&
-      c.y >= -1400000 && c.y <= 1400000
-    );
+    cells = data.features;
 
-    // Forecast info
+    // Forecast info (FIXED formatting)
     const runDate = data.run_date;
     const runHour = data.run_hour;
     const fcst = data.forecast;
@@ -121,17 +117,39 @@ fetch("map/data/tornado_prob_lcc.json")
 
 // --------------------------------
 // Smooth gradient color scale
-// Blue = 0, Red = 1%
+// 0 → light yellow
+// 1% → magenta
 // --------------------------------
 function probToColor(p) {
+
   const maxP = 0.01;
   let t = p / maxP;
+
   if (t < 0) t = 0;
   if (t > 1) t = 1;
 
-  const r = Math.round(0 + t * (255 - 0)); // 0→255
-  const g = 0;                             // keep green at 0
-  const b = Math.round(255 - t * 255);     // 255→0
+  // Color stops
+  const stops = [
+    {t:0.00, c:[255,255,224]}, // light yellow
+    {t:0.25, c:[255,255,0]},   // yellow
+    {t:0.50, c:[255,165,0]},   // orange
+    {t:0.75, c:[255,0,0]},     // red
+    {t:1.00, c:[255,0,255]}    // magenta
+  ];
+
+  let i;
+  for (i=0; i<stops.length-1; i++) {
+    if (t >= stops[i].t && t <= stops[i+1].t) break;
+  }
+
+  const s0 = stops[i];
+  const s1 = stops[i+1];
+
+  const k = (t - s0.t) / (s1.t - s0.t);
+
+  const r = Math.round(s0.c[0] + k*(s1.c[0]-s0.c[0]));
+  const g = Math.round(s0.c[1] + k*(s1.c[1]-s0.c[1]));
+  const b = Math.round(s0.c[2] + k*(s1.c[2]-s0.c[2]));
 
   return `rgba(${r},${g},${b},0.85)`;
 }
