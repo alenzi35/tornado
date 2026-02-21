@@ -98,17 +98,21 @@ fetch("map/data/tornado_prob_lcc.json")
 
     cells = data.features;
 
-    // Forecast info (FIXED formatting)
+    // Forecast info (FIXED formatting with correct valid hour)
     const runDate = data.run_date;
-    const runHour = data.run_hour;
+    const runHour = parseInt(data.run_hour,10); // numeric
     const fcst = data.forecast;
-    const valid = data.valid;
+
+    // Compute valid hour range for F01
+    const fcstHour = runHour + 1; // F01 = +1 hour
+    const validStart = fcstHour % 24;
+    const validEnd = (fcstHour + 1) % 24;
 
     function pad(n){return n.toString().padStart(2,"0");}
 
     infoBox.innerHTML =
       `Run: ${runDate} ${pad(runHour)}Z (${fcst})<br>
-       Valid: ${valid}`;
+       Valid: ${pad(validStart)}:00-${pad(validEnd)}:00 UTC`;
 
     fitView();
     draw();
