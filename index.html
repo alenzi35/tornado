@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8" />
-<title>LCC Tornado Probability Map</title>
+<title>LCC Tornado Probability Map (CONUS)</title>
 
 <style>
   body {
@@ -58,7 +58,6 @@ const infoBox = document.getElementById("forecastInfo");
 let scale = 1;
 let offsetX = 0;
 let offsetY = 0;
-
 let dragging = false;
 let lastX, lastY;
 
@@ -68,9 +67,8 @@ let borders = [];
 let minProb = Infinity;
 let maxProb = -Infinity;
 
-
 // --------------------------------
-// Resize
+// Resize canvas
 // --------------------------------
 function resizeCanvas() {
   canvas.width = window.innerWidth;
@@ -79,9 +77,8 @@ function resizeCanvas() {
 window.addEventListener("resize", resizeCanvas);
 resizeCanvas();
 
-
 // --------------------------------
-// Load borders (CONUS only)
+// Load CONUS borders (Census cb_2024_us_state_5m LCC-projected JSON)
 // --------------------------------
 fetch("map/data/borders_lcc.json")
   .then(r => r.json())
@@ -91,31 +88,30 @@ fetch("map/data/borders_lcc.json")
     draw();
   });
 
-  
 // --------------------------------
-// Load cells (masked CONUS-only)
+// Load masked CONUS tornado probability cells
 // --------------------------------
 fetch("map/data/tornado_prob_lcc_masked.json")
   .then(r => r.json())
   .then(data => {
-
     cells = data.features;
 
-    // Compute probability range
+    // Compute min/max for normalization
     cells.forEach(c => {
       minProb = Math.min(minProb, c.prob);
       maxProb = Math.max(maxProb, c.prob);
     });
 
-    // -------------------------------
     // Update forecast info box
-    // -------------------------------
     const runDate = data.run_date || "??????";
     const runHour = data.run_hour || "??";
     const fcst = data.forecast || "F01";
+
     const validStart = (parseInt(runHour,10)+1)%24;
     const validEnd = (parseInt(runHour,10)+2)%24;
+
     function pad(n){return n.toString().padStart(2,"0");}
+
     infoBox.innerHTML =
       `<b>RAP Tornado Probability</b><br>
       Run: ${runDate} ${pad(runHour)}Z (${fcst})<br>
@@ -125,7 +121,6 @@ fetch("map/data/tornado_prob_lcc_masked.json")
     draw();
   });
 
-
 // --------------------------------
 // Normalize probability → 0..1
 // --------------------------------
@@ -134,15 +129,12 @@ function normProb(p) {
   return (p - minProb) / (maxProb - minProb);
 }
 
-
 // --------------------------------
 // Probability → Color
-// Blue → Purple → Red
 // --------------------------------
 function probToColor(p) {
   const t = normProb(p);
   let r, g, b;
-
   if (t < 0.5) {
     const k = t * 2;
     r = Math.floor(128 * k);
@@ -154,13 +146,11 @@ function probToColor(p) {
     g = 0;
     b = Math.floor(128 - 128 * k);
   }
-
   return `rgba(${r},${g},${b},0.8)`;
 }
 
-
 // --------------------------------
-// Fit view
+// Fit view to CONUS cells + borders
 // --------------------------------
 function fitView() {
   let minX = Infinity, maxX = -Infinity;
@@ -185,31 +175,21 @@ function fitView() {
   const rx = maxX - minX;
   const ry = maxY - minY;
 
-  scale = Math.min(
-    canvas.width / rx,
-    canvas.height / ry
-  ) * 0.9;
-
+  scale = Math.min(canvas.width / rx, canvas.height / ry) * 0.9;
   offsetX = canvas.width/2 - (minX + rx/2) * scale;
   offsetY = canvas.height/2 + (minY + ry/2) * scale;
 }
 
-
 // --------------------------------
-// Draw
+// Draw map
 // --------------------------------
 function draw() {
-
   ctx.setTransform(1,0,0,1,0,0);
   ctx.clearRect(0,0,canvas.width,canvas.height);
 
-  ctx.setTransform(
-    scale, 0,
-    0, -scale,
-    offsetX, offsetY
-  );
+  ctx.setTransform(scale, 0, 0, -scale, offsetX, offsetY);
 
-  // ----- Cells -----
+  // Draw cells
   cells.forEach(c => {
     ctx.fillStyle = probToColor(c.prob);
     const dx = c.dx || 1000;
@@ -217,7 +197,7 @@ function draw() {
     ctx.fillRect(c.x, c.y, dx, dy);
   });
 
-  // ----- Borders -----
+  // Draw borders
   ctx.strokeStyle = "white";
   ctx.lineWidth = 1/scale;
 
@@ -231,24 +211,18 @@ function draw() {
   ctx.stroke();
 }
 
-
 // --------------------------------
-// Screen → LCC
+// Screen → LCC coords
 // --------------------------------
 function screenToLCC(px, py) {
-  return {
-    x: (px - offsetX) / scale,
-    y: -(py - offsetY) / scale
-  };
+  return { x: (px - offsetX) / scale, y: -(py - offsetY) / scale };
 }
 
-
 // --------------------------------
-// Hover tooltip
+// Tooltip on hover
 // --------------------------------
 canvas.addEventListener("mousemove", e => {
   const { x, y } = screenToLCC(e.offsetX, e.offsetY);
-
   let hit = null;
 
   for (const c of cells) {
@@ -264,12 +238,11 @@ canvas.addEventListener("mousemove", e => {
     tooltip.style.display = "block";
     tooltip.style.left = (e.pageX + 12) + "px";
     tooltip.style.top = (e.pageY + 12) + "px";
-    tooltip.innerHTML = `Probability: ${(hit.prob * 100).toFixed(4)}%`;
+    tooltip.innerHTML = `Probability: ${(hit.prob*100).toFixed(4)}%`;
   } else {
     tooltip.style.display = "none";
   }
 });
-
 
 // --------------------------------
 // Zoom
@@ -284,7 +257,6 @@ canvas.addEventListener("wheel", e => {
   scale *= z;
   draw();
 });
-
 
 // --------------------------------
 // Pan
