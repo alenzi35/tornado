@@ -1,37 +1,28 @@
 import geopandas as gpd
-import requests
-import zipfile
-import io
 import json
+import zipfile, io, requests
 from shapely.geometry import box
+from shapely.ops import unary_union
 from shapely.prepared import prep
-from pyproj import CRS
+from pyproj import CRS, Transformer
 
 # -----------------------------
 # Paths
 # -----------------------------
-BORDERS_OUT = "map/data/borders_lcc.json"
-CELLS_IN = "map/data/tornado_prob_lcc.json"
+CELLS_IN = "map/data/tornado_prob_lcc.json"       # raw RAP cells
 CELLS_OUT = "map/data/tornado_prob_lcc_masked.json"
-
+BORDERS_OUT = "map/data/borders_lcc.json"
 CENSUS_URL = "https://www2.census.gov/geo/tiger/GENZ2024/shp/cb_2024_us_state_5m.zip"
 TMP_DIR = "tmp_census"
 
 # -----------------------------
-# Download + unzip shapefile
+# Download + unzip Census shapefile
 # -----------------------------
-print("Downloading US Census Cartographic Boundary states (5m)...")
 resp = requests.get(CENSUS_URL)
 resp.raise_for_status()
 z = zipfile.ZipFile(io.BytesIO(resp.content))
 z.extractall(TMP_DIR)
-print("Download complete.")
-
-# -----------------------------
-# Load shapefile
-# -----------------------------
 shp_path = f"{TMP_DIR}/cb_2024_us_state_5m.shp"
-print("Loading shapefile...")
 gdf = gpd.read_file(shp_path)
 
 # -----------------------------
@@ -45,81 +36,51 @@ lower48 = [
 gdf = gdf[gdf['STUSPS'].isin(lower48)]
 
 # -----------------------------
-# Build RAP LCC projection
+# Build RAP CRS
 # -----------------------------
-print("Building LCC projection...")
-lcc_proj = CRS.from_proj4(
-    "+proj=lcc "
-    "+lat_1=50 "
-    "+lat_2=50 "
-    "+lat_0=50 "
-    "+lon_0=253 "
-    "+a=6371229 "
-    "+b=6371229 "
-    "+units=m "
-    "+no_defs"
+with open(CELLS_IN) as f:
+    cells_data = json.load(f)
+p = cells_data["projection"]
+rap_crs = CRS.from_proj4(
+    f"+proj=lcc +lat_1={p['lat_1']} +lat_2={p['lat_2']} +lat_0={p['lat_0']} "
+    f"+lon_0={p['lon_0']} +a={p.get('a',6371229)} +b={p.get('b',6371229)} +units=m +no_defs"
 )
 
 # -----------------------------
-# Reproject
+# Reproject borders
 # -----------------------------
-print("Reprojecting...")
-gdf_lcc = gdf.to_crs(lcc_proj)
-
-# Merge all geometries into a single CONUS polygon
-conus_poly = gdf_lcc.unary_union
-prepared_conus = prep(conus_poly)
+gdf_lcc = gdf.to_crs(rap_crs)
+us_poly = unary_union(gdf_lcc.geometry)
+prepared_us = prep(us_poly)
 
 # -----------------------------
-# Export borders
+# Export lower-48 borders
 # -----------------------------
 features = []
 for geom in gdf_lcc.geometry:
-    if geom is None:
-        continue
-    if geom.geom_type == "MultiPolygon":
+    if geom.geom_type == "Polygon":
+        features.append(list(geom.exterior.coords))
+    elif geom.geom_type == "MultiPolygon":
         for poly in geom.geoms:
-            coords = list(poly.exterior.coords)
-            features.append(coords)
-    elif geom.geom_type == "Polygon":
-        coords = list(geom.exterior.coords)
-        features.append(coords)
-
-out = {
-    "projection": {
-        "proj": "lcc",
-        "lat_0": 50,
-        "lat_1": 50,
-        "lat_2": 50,
-        "lon_0": 253,
-        "a": 6371229,
-        "b": 6371229
-    },
-    "features": features
-}
-
+            features.append(list(poly.exterior.coords))
 with open(BORDERS_OUT, "w") as f:
-    json.dump(out, f)
-
-print(f"Saved {len(features)} borders to {BORDERS_OUT}")
+    json.dump({"features": features}, f)
+print(f"Saved {len(features)} lower-48 borders to {BORDERS_OUT}")
 
 # -----------------------------
-# Filter tornado cells
+# Filter tornado cells to CONUS (inside or touching)
 # -----------------------------
-print("Filtering tornado cells to lower 48 CONUS touching/inside polygon...")
-with open(CELLS_IN) as f:
-    data = json.load(f)
+filtered_cells = []
+for c in cells_data["features"]:
+    x = c["x"]
+    y = c["y"]
+    w = c["dx"]
+    h = c["dy"]
+    cell_poly = box(x, y, x+w, y+h)
+    if prepared_us.intersects(cell_poly):
+        filtered_cells.append(c)
 
-filtered = []
-for c in data["features"]:
-    cell = box(c["x"], c["y"], c["x"] + c["dx"], c["y"] + c["dy"])
-    if prepared_conus.intersects(cell):  # includes touching
-        filtered.append(c)
-
-data["features"] = filtered
-
+cells_data["features"] = filtered_cells
 with open(CELLS_OUT, "w") as f:
-    json.dump(data, f)
-
-print(f"Saved {len(filtered)} tornado cells to {CELLS_OUT}")
-print("Done.")
+    json.dump(cells_data, f)
+print(f"Kept {len(filtered_cells)} cells that touch or are inside CONUS")
