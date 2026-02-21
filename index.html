@@ -2,14 +2,17 @@
 <html>
 <head>
 <meta charset="utf-8">
-<title>RAP Tornado Probability</title>
 
 <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css"/>
 
 <style>
-body {
+
+html, body {
     margin: 0;
     padding: 0;
+    background: black;
+    color: white;
+    font-family: Arial, sans-serif;
 }
 
 #map {
@@ -17,34 +20,36 @@ body {
     height: 100vh;
 }
 
-.valid-time-box {
+#validTimeBox {
     position: absolute;
     top: 10px;
-    left: 50px;
+    left: 50%;
+    transform: translateX(-50%);
     background: rgba(0,0,0,0.6);
-    color: white;
-    padding: 6px 10px;
-    font-family: monospace;
+    padding: 6px 12px;
+    border-radius: 6px;
     font-size: 14px;
-    border-radius: 4px;
     z-index: 1000;
 }
-</style>
 
+</style>
 </head>
+
 <body>
 
 <div id="map"></div>
-<div class="valid-time-box" id="validTime">Loading...</div>
+
+<div id="validTimeBox">
+<span id="validTime">Loading...</span>
+</div>
 
 <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
-
-<!-- REQUIRED for proper polygon clipping -->
-<script src="https://unpkg.com/leaflet-pip@1.1.0/leaflet-pip.min.js"></script>
+<script src="https://unpkg.com/proj4"></script>
+<script src="https://unpkg.com/proj4leaflet"></script>
 
 <script>
 
-// ---------------- MAP SETUP ----------------
+// ---------------- MAP INIT ----------------
 
 const map = L.map('map', {
     zoomControl: false,
@@ -52,16 +57,14 @@ const map = L.map('map', {
 }).setView([39, -96], 5);
 
 
-// ---------------- COLOR GRADIENT ----------------
+// ---------------- COLOR FUNCTION ----------------
 // 0% = blue
 // 1% = red
 // smooth gradient
 
 function getColor(prob) {
 
-    const p = Math.max(0, Math.min(prob, 0.01));
-
-    const t = p / 0.01;
+    const t = Math.max(0, Math.min(prob, 0.01)) / 0.01;
 
     const r = Math.round(255 * t);
     const g = 0;
@@ -71,32 +74,10 @@ function getColor(prob) {
 }
 
 
-// ---------------- LOAD CONUS OUTLINE ----------------
-
-let conusLayer;
-
-fetch("conus.geojson")
-.then(res => res.json())
-.then(data => {
-
-    conusLayer = L.geoJSON(data, {
-
-        style: {
-            color: "#FFFFFF",
-            weight: 1,
-            fill: false
-        }
-
-    }).addTo(map);
-
-    loadCells();
-});
-
-
 // ---------------- LOAD STATE BORDERS ----------------
 
-fetch("states.geojson")
-.then(res => res.json())
+fetch("map/data/states.geojson")
+.then(response => response.json())
 .then(data => {
 
     L.geoJSON(data, {
@@ -112,77 +93,45 @@ fetch("states.geojson")
 });
 
 
-// ---------------- CONUS CELL CHECK ----------------
+// ---------------- LOAD RAP CELLS ----------------
 
-function isCellInCONUS(bounds) {
+fetch("map/data/tornado_prob_lcc.json")
+.then(response => response.json())
+.then(data => {
 
-    const corners = [
+    const proj = data.projection;
 
-        [bounds.getSouth(), bounds.getWest()],
-        [bounds.getSouth(), bounds.getEast()],
-        [bounds.getNorth(), bounds.getWest()],
-        [bounds.getNorth(), bounds.getEast()]
+    const crs = new L.Proj.CRS(
+        "RAP_LCC",
+        `+proj=lcc +lat_1=${proj.lat_1} +lat_2=${proj.lat_2} +lat_0=${proj.lat_0} +lon_0=${proj.lon_0} +a=${proj.a} +b=${proj.b} +units=m +no_defs`
+    );
 
-    ];
+    data.features.forEach(cell => {
 
-    for (const corner of corners) {
+        const sw = crs.unproject(L.point(cell.x, cell.y));
+        const ne = crs.unproject(L.point(cell.x + cell.dx, cell.y + cell.dy));
 
-        if (leafletPip.pointInLayer(corner, conusLayer).length > 0) {
-            return true;
-        }
+        L.rectangle([sw, ne], {
 
-    }
+            fillColor: getColor(cell.prob),
+            fillOpacity: 0.65,
+            stroke: false
 
-    return false;
-}
-
-
-// ---------------- LOAD CELLS ----------------
-
-function loadCells() {
-
-    fetch("rap_cells.json")
-    .then(res => res.json())
-    .then(cells => {
-
-        cells.forEach(cell => {
-
-            const bounds = L.latLngBounds(
-
-                [cell.lat_min, cell.lon_min],
-                [cell.lat_max, cell.lon_max]
-
-            );
-
-            // STRICT CONUS CLIP
-            if (!isCellInCONUS(bounds)) return;
-
-            L.rectangle(bounds, {
-
-                fillColor: getColor(cell.prob),
-                fillOpacity: 0.6,
-                stroke: false
-
-            }).addTo(map);
-
-        });
+        }).addTo(map);
 
     });
 
-}
+});
 
 
-// ---------------- VALID TIME FIX ----------------
+// ---------------- LOAD VALID TIME ----------------
 
-fetch("rap_metadata.json")
-.then(res => res.json())
+fetch("map/data/tornado_prob_lcc.json")
+.then(response => response.json())
 .then(meta => {
 
-    const start = meta.valid_start; // example: 18:00
-    const end = meta.valid_end;     // example: 19:00
-
     document.getElementById("validTime").innerText =
-        `${start}-${end} UTC`;
+        meta.valid.replace(" UTC", "") + " UTC";
 
 });
 
