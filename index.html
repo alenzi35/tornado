@@ -1,138 +1,294 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-<meta charset="utf-8">
-
-<link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css"/>
+<meta charset="UTF-8" />
+<title>LCC Tornado Probability Map</title>
 
 <style>
-
-html, body {
+  body {
     margin: 0;
-    padding: 0;
-    background: black;
+    overflow: hidden;
+    background: #111;
+  }
+
+  canvas {
+    display: block;
+  }
+
+  #tooltip {
+    position: absolute;
+    padding: 6px 10px;
+    background: rgba(0,0,0,0.85);
     color: white;
-    font-family: Arial, sans-serif;
-}
+    border-radius: 5px;
+    pointer-events: none;
+    display: none;
+    font-family: sans-serif;
+    font-size: 13px;
+    white-space: nowrap;
+  }
 
-#map {
-    width: 100vw;
-    height: 100vh;
-}
-
-#validTimeBox {
+  #forecastInfo {
     position: absolute;
     top: 10px;
-    left: 50%;
-    transform: translateX(-50%);
-    background: rgba(0,0,0,0.6);
-    padding: 6px 12px;
+    left: 10px;
+    padding: 8px 12px;
+    background: rgba(0,0,0,0.7);
+    color: white;
+    font-family: sans-serif;
+    font-size: 13px;
     border-radius: 6px;
-    font-size: 14px;
-    z-index: 1000;
-}
-
+    z-index: 10;
+  }
 </style>
 </head>
 
 <body>
 
-<div id="map"></div>
-
-<div id="validTimeBox">
-<span id="validTime">Loading...</span>
-</div>
-
-<script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
-<script src="https://unpkg.com/proj4"></script>
-<script src="https://unpkg.com/proj4leaflet"></script>
+<canvas id="mapCanvas"></canvas>
+<div id="tooltip"></div>
+<div id="forecastInfo">Loading forecast…</div>
 
 <script>
+const canvas = document.getElementById("mapCanvas");
+const ctx = canvas.getContext("2d");
+const tooltip = document.getElementById("tooltip");
+const infoBox = document.getElementById("forecastInfo");
 
-// ---------------- MAP INIT ----------------
+let scale = 1;
+let offsetX = 0;
+let offsetY = 0;
 
-const map = L.map('map', {
-    zoomControl: false,
-    attributionControl: false
-}).setView([39, -96], 5);
+let dragging = false;
+let lastX, lastY;
+
+let cells = [];
+let borders = [];
 
 
-// ---------------- COLOR FUNCTION ----------------
-// 0% = blue
-// 1% = red
-// smooth gradient
+// --------------------------------
+// Resize
+// --------------------------------
+function resizeCanvas() {
+  canvas.width = window.innerWidth;
+  canvas.height = window.innerHeight;
+}
+window.addEventListener("resize", resizeCanvas);
+resizeCanvas();
 
-function getColor(prob) {
 
-    const t = Math.max(0, Math.min(prob, 0.01)) / 0.01;
+// --------------------------------
+// Load borders
+// --------------------------------
+fetch("map/data/borders_lcc.json")
+  .then(r => r.json())
+  .then(data => {
+    borders = data.features;
+    fitView();
+    draw();
+  });
 
-    const r = Math.round(255 * t);
-    const g = 0;
-    const b = Math.round(255 * (1 - t));
 
-    return `rgb(${r},${g},${b})`;
+// --------------------------------
+// Load cells
+// --------------------------------
+fetch("map/data/tornado_prob_lcc.json")
+  .then(r => r.json())
+  .then(data => {
+
+    // Filter cells to CONUS bounding box (rough LCC bounds)
+    cells = data.features.filter(c => 
+      c.x >= -2300000 && c.x <= 2300000 &&
+      c.y >= -1400000 && c.y <= 1400000
+    );
+
+    // Forecast info
+    const runDate = data.run_date;
+    const runHour = data.run_hour;
+    const fcst = data.forecast;
+    const valid = data.valid;
+
+    function pad(n){return n.toString().padStart(2,"0");}
+
+    infoBox.innerHTML =
+      `Run: ${runDate} ${pad(runHour)}Z (${fcst})<br>
+       Valid: ${valid}`;
+
+    fitView();
+    draw();
+  });
+
+
+// --------------------------------
+// Smooth gradient color scale
+// Blue = 0, Red = 1%
+// --------------------------------
+function probToColor(p) {
+  const maxP = 0.01;
+  let t = p / maxP;
+  if (t < 0) t = 0;
+  if (t > 1) t = 1;
+
+  const r = Math.round(0 + t * (255 - 0)); // 0→255
+  const g = 0;                             // keep green at 0
+  const b = Math.round(255 - t * 255);     // 255→0
+
+  return `rgba(${r},${g},${b},0.85)`;
 }
 
 
-// ---------------- LOAD STATE BORDERS ----------------
+// --------------------------------
+// Fit view
+// --------------------------------
+function fitView() {
 
-fetch("map/data/states.geojson")
-.then(response => response.json())
-.then(data => {
+  if (cells.length === 0) return;
 
-    L.geoJSON(data, {
+  let minX=Infinity, maxX=-Infinity;
+  let minY=Infinity, maxY=-Infinity;
 
-        style: {
-            color: "#FFFFFF",
-            weight: 0.5,
-            fill: false
-        }
+  cells.forEach(c=>{
+    minX=Math.min(minX,c.x);
+    maxX=Math.max(maxX,c.x+c.dx);
+    minY=Math.min(minY,c.y);
+    maxY=Math.max(maxY,c.y+c.dy);
+  });
 
-    }).addTo(map);
-
-});
-
-
-// ---------------- LOAD RAP CELLS ----------------
-
-fetch("map/data/tornado_prob_lcc.json")
-.then(response => response.json())
-.then(data => {
-
-    const proj = data.projection;
-
-    const crs = new L.Proj.CRS(
-        "RAP_LCC",
-        `+proj=lcc +lat_1=${proj.lat_1} +lat_2=${proj.lat_2} +lat_0=${proj.lat_0} +lon_0=${proj.lon_0} +a=${proj.a} +b=${proj.b} +units=m +no_defs`
-    );
-
-    data.features.forEach(cell => {
-
-        const sw = crs.unproject(L.point(cell.x, cell.y));
-        const ne = crs.unproject(L.point(cell.x + cell.dx, cell.y + cell.dy));
-
-        L.rectangle([sw, ne], {
-
-            fillColor: getColor(cell.prob),
-            fillOpacity: 0.65,
-            stroke: false
-
-        }).addTo(map);
-
+  borders.forEach(line=>{
+    line.forEach(([x,y])=>{
+      minX=Math.min(minX,x);
+      maxX=Math.max(maxX,x);
+      minY=Math.min(minY,y);
+      maxY=Math.max(maxY,y);
     });
+  });
 
+  const rx=maxX-minX;
+  const ry=maxY-minY;
+
+  scale=Math.min(canvas.width/rx,canvas.height/ry)*0.9;
+
+  offsetX=canvas.width/2-(minX+rx/2)*scale;
+  offsetY=canvas.height/2+(minY+ry/2)*scale;
+}
+
+
+// --------------------------------
+// Draw
+// --------------------------------
+function draw(){
+
+  ctx.setTransform(1,0,0,1,0,0);
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+
+  ctx.setTransform(scale,0,0,-scale,offsetX,offsetY);
+
+  // Cells
+  cells.forEach(c=>{
+    ctx.fillStyle=probToColor(c.prob);
+    ctx.fillRect(c.x,c.y,c.dx,c.dy);
+  });
+
+  // Borders
+  ctx.strokeStyle="white";
+  ctx.lineWidth=1/scale;
+
+  ctx.beginPath();
+
+  borders.forEach(line=>{
+    line.forEach(([x,y],i)=>{
+      if(i===0) ctx.moveTo(x,y);
+      else ctx.lineTo(x,y);
+    });
+  });
+
+  ctx.stroke();
+}
+
+
+// --------------------------------
+// Screen → LCC
+// --------------------------------
+function screenToLCC(px,py){
+  return {
+    x:(px-offsetX)/scale,
+    y:-(py-offsetY)/scale
+  };
+}
+
+
+// --------------------------------
+// Tooltip
+// --------------------------------
+canvas.addEventListener("mousemove",e=>{
+
+  const {x,y}=screenToLCC(e.offsetX,e.offsetY);
+
+  let hit=null;
+
+  for(const c of cells){
+
+    if(x>=c.x&&x<=c.x+c.dx&&y>=c.y&&y<=c.y+c.dy){
+      hit=c;
+      break;
+    }
+  }
+
+  if(hit){
+
+    tooltip.style.display="block";
+    tooltip.style.left=(e.pageX+12)+"px";
+    tooltip.style.top=(e.pageY+12)+"px";
+
+    tooltip.innerHTML=`Probability: ${(hit.prob*100).toFixed(4)}%`;
+
+  }else{
+
+    tooltip.style.display="none";
+  }
 });
 
 
-// ---------------- LOAD VALID TIME ----------------
+// --------------------------------
+// Zoom
+// --------------------------------
+canvas.addEventListener("wheel",e=>{
 
-fetch("map/data/tornado_prob_lcc.json")
-.then(response => response.json())
-.then(meta => {
+  e.preventDefault();
 
-    document.getElementById("validTime").innerText =
-        meta.valid.replace(" UTC", "") + " UTC";
+  const z=e.deltaY<0?1.15:0.87;
 
+  offsetX=e.offsetX-z*(e.offsetX-offsetX);
+  offsetY=e.offsetY-z*(e.offsetY-offsetY);
+
+  scale*=z;
+
+  draw();
+});
+
+
+// --------------------------------
+// Pan
+// --------------------------------
+canvas.addEventListener("mousedown",e=>{
+  dragging=true;
+  lastX=e.clientX;
+  lastY=e.clientY;
+});
+
+window.addEventListener("mouseup",()=>dragging=false);
+
+window.addEventListener("mousemove",e=>{
+
+  if(!dragging) return;
+
+  offsetX+=e.clientX-lastX;
+  offsetY+=e.clientY-lastY;
+
+  lastX=e.clientX;
+  lastY=e.clientY;
+
+  draw();
 });
 
 </script>
