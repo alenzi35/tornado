@@ -3,139 +3,134 @@ import requests
 import zipfile
 import io
 import json
+import math
 from pyproj import CRS
-from shapely.geometry import Polygon, box
-import os
+from shapely.geometry import box
+from shapely.ops import unary_union
 
-# -----------------------------
-# Paths
-# -----------------------------
-OUT_BORDER_PATH = "map/data/borders_lcc.json"
-OUT_CELL_PATH = "map/data/tornado_prob_lcc.json"
 
-NE_URL = "https://naturalearth.s3.amazonaws.com/50m_cultural/ne_50m_admin_1_states_provinces.zip"
-TORNADO_JSON = "map/data/tornado_prob_lcc.json"  # existing tornado JSON
+# ============================================================
+# CONFIG
+# ============================================================
 
-os.makedirs("tmp_borders", exist_ok=True)
-os.makedirs("map/data", exist_ok=True)
+BORDERS_OUT = "map/data/borders_lcc.json"
+CELLS_IN = "map/data/tornado_prob_lcc.json"
+CELLS_OUT = "map/data/tornado_prob_lcc_masked.json"
 
-# -----------------------------
-# Download + unzip shapefile
-# -----------------------------
-print("Downloading Natural Earth borders...")
-resp = requests.get(NE_URL)
-resp.raise_for_status()
-z = zipfile.ZipFile(io.BytesIO(resp.content))
-z.extractall("tmp_borders")
-print("Download complete.")
+# US Census states (correct lakes, no Michigan absorption)
+CENSUS_URL = "https://www2.census.gov/geo/tiger/GENZ2023/shp/cb_2023_us_state_20m.zip"
 
-# -----------------------------
-# Load shapefile
-# -----------------------------
-shp_path = "tmp_borders/ne_50m_admin_1_states_provinces.shp"
-print("Loading shapefile...")
-gdf = gpd.read_file(shp_path)
 
-# -----------------------------
-# Filter to USA CONUS only
-# -----------------------------
-CONUS_STATES = [
-    "Alabama","Arizona","Arkansas","California","Colorado","Connecticut",
-    "Delaware","Florida","Georgia","Idaho","Illinois","Indiana","Iowa",
-    "Kansas","Kentucky","Louisiana","Maine","Maryland","Massachusetts",
-    "Michigan","Minnesota","Mississippi","Missouri","Montana","Nebraska",
-    "Nevada","New Hampshire","New Jersey","New Mexico","New York",
-    "North Carolina","North Dakota","Ohio","Oklahoma","Oregon",
-    "Pennsylvania","Rhode Island","South Carolina","South Dakota",
-    "Tennessee","Texas","Utah","Vermont","Virginia","Washington",
-    "West Virginia","Wisconsin","Wyoming"
-]
+# ============================================================
+# LOAD RAP CRS
+# ============================================================
 
-gdf = gdf[gdf["admin"] == "United States of America"]
-gdf = gdf[gdf["name"].isin(CONUS_STATES)]
+def get_rap_crs():
+    print("Loading RAP CRS from tornado_prob_lcc.json")
+    with open(CELLS_IN) as f:
+        data = json.load(f)
+    p = data["projection"]
+    crs = CRS.from_proj4(
+        f"+proj=lcc "
+        f"+lat_1={p['lat_1']} "
+        f"+lat_2={p['lat_2']} "
+        f"+lat_0={p['lat_0']} "
+        f"+lon_0={p['lon_0']} "
+        f"+a={p.get('a',6371229)} "
+        f"+b={p.get('b',6371229)} "
+        f"+units=m +no_defs"
+    )
+    print("RAP CRS loaded")
+    return crs
 
-# -----------------------------
-# Build LCC projection
-# -----------------------------
-print("Building LCC projection...")
-lcc_proj = CRS.from_proj4(
-    "+proj=lcc "
-    "+lat_1=50 "
-    "+lat_2=50 "
-    "+lat_0=50 "
-    "+lon_0=253 "
-    "+a=6371229 "
-    "+b=6371229 "
-    "+units=m "
-    "+no_defs"
-)
 
-# -----------------------------
-# Reproject
-# -----------------------------
-print("Reprojecting borders...")
-gdf_lcc = gdf.to_crs(lcc_proj)
+# ============================================================
+# DOWNLOAD CENSUS STATES
+# ============================================================
 
-# -----------------------------
-# Export borders to JSON
-# -----------------------------
-features = []
-for geom in gdf_lcc.geometry:
-    if geom is None:
-        continue
-    if geom.geom_type == "MultiPolygon":
-        for poly in geom.geoms:
-            coords = list(poly.exterior.coords)
+def download_states():
+    print("Downloading Census states shapefile...")
+    resp = requests.get(CENSUS_URL)
+    resp.raise_for_status()
+    z = zipfile.ZipFile(io.BytesIO(resp.content))
+    z.extractall("tmp_states")
+    shp = "tmp_states/cb_2023_us_state_20m.shp"
+    gdf = gpd.read_file(shp)
+    print("States loaded:", len(gdf))
+    return gdf
+
+
+# ============================================================
+# BUILD US POLYGON
+# ============================================================
+
+def build_us_polygon(gdf, rap_crs):
+    print("Reprojecting states to RAP CRS...")
+    gdf = gdf.to_crs(rap_crs)
+    print("Building unified US polygon...")
+    us_poly = unary_union(gdf.geometry)
+    return us_poly, gdf
+
+
+# ============================================================
+# EXPORT BORDERS
+# ============================================================
+
+def export_borders(gdf):
+    features = []
+    for geom in gdf.geometry:
+        if geom.geom_type == "Polygon":
+            coords = list(geom.exterior.coords)
             features.append(coords)
-    elif geom.geom_type == "Polygon":
-        coords = list(geom.exterior.coords)
-        features.append(coords)
+        elif geom.geom_type == "MultiPolygon":
+            for poly in geom.geoms:
+                coords = list(poly.exterior.coords)
+                features.append(coords)
+    out = {"features": features}
+    with open(BORDERS_OUT, "w") as f:
+        json.dump(out, f)
+    print("Saved borders:", len(features))
 
-out_borders = {
-    "projection": {
-        "proj": "lcc",
-        "lat_0": 50,
-        "lat_1": 50,
-        "lat_2": 50,
-        "lon_0": 253,
-        "a": 6371229,
-        "b": 6371229
-    },
-    "features": features
-}
 
-with open(OUT_BORDER_PATH, "w") as f:
-    json.dump(out_borders, f)
-print(f"Saved {len(features)} CONUS borders to {OUT_BORDER_PATH}")
+# ============================================================
+# FILTER CELLS BY OUTLINE (CONUS only)
+# ============================================================
 
-# -----------------------------
-# Filter tornado cells to CONUS
-# -----------------------------
-if os.path.exists(TORNADO_JSON):
-    print("Filtering tornado cells to CONUS...")
-    with open(TORNADO_JSON) as f:
-        cells = json.load(f)["features"]
-
-    # Merge CONUS polygons into single Shapely polygon
-    conus_polygon = gdf_lcc.unary_union
-
-    filtered_cells = []
+def filter_cells(us_poly):
+    print("Loading cells...")
+    with open(CELLS_IN) as f:
+        data = json.load(f)
+    cells = data["features"]
+    print("Cells before:", len(cells))
+    filtered = []
     for c in cells:
-        cell_box = box(c['x'], c['y'], c['x'] + c['dx'], c['y'] + c['dy'])
-        if cell_box.intersects(conus_polygon):
-            filtered_cells.append(c)
+        x = c["x"]
+        y = c["y"]
+        w = c["dx"]
+        h = c["dy"]
+        cell_poly = box(x, y, x+w, y+h)
+        if cell_poly.intersects(us_poly):
+            c["inside"] = True
+            filtered.append(c)
+    print("Cells after:", len(filtered))
+    data["features"] = filtered
+    with open(CELLS_OUT, "w") as f:
+        json.dump(data, f)
+    print("Saved masked cells")
 
-    # Export filtered tornado cells
-    output = {
-        "projection": out_borders["projection"],
-        "features": filtered_cells
-    }
 
-    with open(OUT_CELL_PATH, "w") as f:
-        json.dump(output, f)
+# ============================================================
+# MAIN
+# ============================================================
 
-    print(f"Saved {len(filtered_cells)} CONUS tornado cells to {OUT_CELL_PATH}")
-else:
-    print("No tornado_prob_lcc.json found yet. Skipping cell filtering.")
+def main():
+    rap_crs = get_rap_crs()
+    states = download_states()
+    us_poly, states_lcc = build_us_polygon(states, rap_crs)
+    export_borders(states_lcc)
+    filter_cells(us_poly)
+    print("DONE")
 
-print("Done.")
+
+if __name__ == "__main__":
+    main()
