@@ -25,7 +25,6 @@
     display: none;
     font-family: sans-serif;
     font-size: 13px;
-    white-space: nowrap;
   }
 
   #forecastInfo {
@@ -50,30 +49,30 @@
 <div id="forecastInfo">Loading forecast…</div>
 
 <script>
-const canvas = document.getElementById("mapCanvas");
-const ctx = canvas.getContext("2d");
-const tooltip = document.getElementById("tooltip");
-const infoBox = document.getElementById("forecastInfo");
+const canvas=document.getElementById("mapCanvas");
+const ctx=canvas.getContext("2d");
+const tooltip=document.getElementById("tooltip");
+const infoBox=document.getElementById("forecastInfo");
 
-let scale = 1;
-let offsetX = 0;
-let offsetY = 0;
+let scale=1;
+let offsetX=0;
+let offsetY=0;
 
-let dragging = false;
-let lastX, lastY;
+let dragging=false;
+let lastX,lastY;
 
-let cells = [];
-let borders = [];
+let cells=[];
+let borders=[];
 
 
 // --------------------------------
 // Resize
 // --------------------------------
-function resizeCanvas() {
-  canvas.width = window.innerWidth;
-  canvas.height = window.innerHeight;
+function resizeCanvas(){
+  canvas.width=window.innerWidth;
+  canvas.height=window.innerHeight;
 }
-window.addEventListener("resize", resizeCanvas);
+window.addEventListener("resize",resizeCanvas);
 resizeCanvas();
 
 
@@ -81,75 +80,73 @@ resizeCanvas();
 // Load borders
 // --------------------------------
 fetch("map/data/borders_lcc.json")
-  .then(r => r.json())
-  .then(data => {
-    borders = data.features;
-    fitView();
-    draw();
-  });
+.then(r=>r.json())
+.then(data=>{
+  borders=data.features;
+  fitView();
+  draw();
+});
 
 
 // --------------------------------
 // Load cells
 // --------------------------------
 fetch("map/data/tornado_prob_lcc.json")
-  .then(r => r.json())
-  .then(data => {
+.then(r=>r.json())
+.then(data=>{
 
-    cells = data.features;
+  cells=data.features;
 
-    // Forecast info (FIXED formatting)
-    const runDate = data.run_date;
-    const runHour = data.run_hour;
-    const fcst = data.forecast;
-    const valid = data.valid;
+  const runDate=data.run_date;
+  const runHour=parseInt(data.run_hour);
+  const fcst=data.forecast;
 
-    function pad(n){return n.toString().padStart(2,"0");}
+  const validStart=(runHour+1)%24;
+  const validEnd=(runHour+2)%24;
 
-    infoBox.innerHTML =
-      `Run: ${runDate} ${pad(runHour)}Z (${fcst})<br>
-       Valid: ${valid}`;
+  function pad(n){return n.toString().padStart(2,"0");}
 
-    fitView();
-    draw();
-  });
+  infoBox.innerHTML=
+    `Run: ${runDate} ${pad(runHour)}Z (${fcst})<br>
+     Valid: ${pad(validStart)}:00–${pad(validEnd)}:00 UTC`;
+
+  fitView();
+  draw();
+});
 
 
 // --------------------------------
-// Smooth gradient color scale
-// 0 → light yellow
-// 1% → magenta
+// Gradient scale
 // --------------------------------
-function probToColor(p) {
+function probToColor(p){
 
-  const maxP = 0.01;
-  let t = p / maxP;
+  const maxP=0.01;
+  let t=p/maxP;
 
-  if (t < 0) t = 0;
-  if (t > 1) t = 1;
+  if(t<0)t=0;
+  if(t>1)t=1;
 
-  // Color stops
-  const stops = [
-    {t:0.00, c:[255,255,224]}, // light yellow
-    {t:0.25, c:[255,255,0]},   // yellow
-    {t:0.50, c:[255,165,0]},   // orange
-    {t:0.75, c:[255,0,0]},     // red
-    {t:1.00, c:[255,0,255]}    // magenta
+  const stops=[
+    {t:0.00,c:[255,255,224]},
+    {t:0.25,c:[255,255,0]},
+    {t:0.50,c:[255,165,0]},
+    {t:0.75,c:[255,0,0]},
+    {t:1.00,c:[255,0,255]}
   ];
 
   let i;
-  for (i=0; i<stops.length-1; i++) {
-    if (t >= stops[i].t && t <= stops[i+1].t) break;
+  for(i=0;i<stops.length-1;i++){
+    if(t>=stops[i].t && t<=stops[i+1].t) break;
   }
 
-  const s0 = stops[i];
-  const s1 = stops[i+1];
+  const s0=stops[i];
+  const s1=stops[i+1];
 
-  const k = (t - s0.t) / (s1.t - s0.t);
+  const k=(t-s0.t)/(s1.t-s0.t);
 
-  const r = Math.round(s0.c[0] + k*(s1.c[0]-s0.c[0]));
-  const g = Math.round(s0.c[1] + k*(s1.c[1]-s0.c[1]));
-  const b = Math.round(s0.c[2] + k*(s1.c[2]-s0.c[2]));
+  const r=Math.round(s0.c[0]+k*(s1.c[0]-s0.c[0]));
+  const g=Math.round(s0.c[1]+k*(s1.c[1]-s0.c[1]));
+  const b=Math.round(s0.c[2]+k*(s1.c[2]-s0.c[2]));
 
   return `rgba(${r},${g},${b},0.85)`;
 }
@@ -158,12 +155,12 @@ function probToColor(p) {
 // --------------------------------
 // Fit view
 // --------------------------------
-function fitView() {
+function fitView(){
 
-  if (cells.length === 0) return;
+  if(cells.length===0)return;
 
-  let minX=Infinity, maxX=-Infinity;
-  let minY=Infinity, maxY=-Infinity;
+  let minX=Infinity,maxX=-Infinity;
+  let minY=Infinity,maxY=-Infinity;
 
   cells.forEach(c=>{
     minX=Math.min(minX,c.x);
@@ -201,21 +198,21 @@ function draw(){
 
   ctx.setTransform(scale,0,0,-scale,offsetX,offsetY);
 
-  // Cells
+  // cells
   cells.forEach(c=>{
     ctx.fillStyle=probToColor(c.prob);
     ctx.fillRect(c.x,c.y,c.dx,c.dy);
   });
 
-  // Borders
-  ctx.strokeStyle="white";
+  // SPC-style gray borders
+  ctx.strokeStyle="#A9A9A9";
   ctx.lineWidth=1/scale;
 
   ctx.beginPath();
 
   borders.forEach(line=>{
     line.forEach(([x,y],i)=>{
-      if(i===0) ctx.moveTo(x,y);
+      if(i===0)ctx.moveTo(x,y);
       else ctx.lineTo(x,y);
     });
   });
@@ -225,10 +222,10 @@ function draw(){
 
 
 // --------------------------------
-// Screen → LCC
+// Screen to LCC
 // --------------------------------
 function screenToLCC(px,py){
-  return {
+  return{
     x:(px-offsetX)/scale,
     y:-(py-offsetY)/scale
   };
@@ -245,23 +242,19 @@ canvas.addEventListener("mousemove",e=>{
   let hit=null;
 
   for(const c of cells){
-
-    if(x>=c.x&&x<=c.x+c.dx&&y>=c.y&&y<=c.y+c.dy){
+    if(x>=c.x && x<=c.x+c.dx && y>=c.y && y<=c.y+c.dy){
       hit=c;
       break;
     }
   }
 
   if(hit){
-
     tooltip.style.display="block";
     tooltip.style.left=(e.pageX+12)+"px";
     tooltip.style.top=(e.pageY+12)+"px";
-
     tooltip.innerHTML=`Probability: ${(hit.prob*100).toFixed(4)}%`;
-
-  }else{
-
+  }
+  else{
     tooltip.style.display="none";
   }
 });
@@ -298,7 +291,7 @@ window.addEventListener("mouseup",()=>dragging=false);
 
 window.addEventListener("mousemove",e=>{
 
-  if(!dragging) return;
+  if(!dragging)return;
 
   offsetX+=e.clientX-lastX;
   offsetY+=e.clientY-lastY;
