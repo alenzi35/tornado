@@ -19,13 +19,6 @@ DATA_DIR = "data"
 GRIB_PATH = "data/rap.grib2"
 OUTPUT_JSON = "map/data/tornado_prob_lcc.json"
 
-INTERCEPT = -14
-COEFFS = {
-    "CAPE": 2.88592370e-03,
-    "CIN":  2.38728498e-05,
-    "HLCY": 8.85192696e-03
-}
-
 # US Census lower 48 states 5m shapefile
 CONUS_SHAPE_URL = "https://www2.census.gov/geo/tiger/GENZ2024/shp/cb_2024_us_state_5m.zip"
 
@@ -81,8 +74,10 @@ def pick_var(grbs, shortname, typeOfLevel=None, bottom=None, top=None):
 
 grbs.seek(0)
 cape_msg = pick_var(grbs, "cape", "surface")
+
 grbs.seek(0)
 cin_msg = pick_var(grbs, "cin", "surface")
+
 grbs.seek(0)
 hlcy_msg = pick_var(grbs, "hlcy", "heightAboveGroundLayer", 0, 1000)
 
@@ -105,11 +100,6 @@ proj_lcc = Proj(
 
 x_vals, y_vals = proj_lcc(lons, lats)
 
-# ================= CALC PROB =================
-
-linear = INTERCEPT + COEFFS["CAPE"]*cape + COEFFS["CIN"]*cin + COEFFS["HLCY"]*hlcy
-prob = 1 / (1 + np.exp(-linear))
-
 # ================= DOWNLOAD CONUS SHAPE =================
 
 def download_shapefile(url, folder):
@@ -129,31 +119,44 @@ lower48 = states_gdf[~states_gdf["STUSPS"].isin(["AK","HI","PR"])]
 # Project to RAP LCC
 lower48_lcc = lower48.to_crs(proj_lcc.srs)
 
-# Merge into a single CONUS polygon
+# Merge into CONUS polygon
 conus_poly = lower48_lcc.unary_union
 prepared_conus = prep(conus_poly)
 
 # ================= FILTER CELLS =================
 
 print("Filtering grid cells to CONUS (intersects polygon)...")
+
 features = []
-rows, cols = prob.shape
+
+rows, cols = cape.shape
 
 for i in range(rows):
     for j in range(cols):
+
         x = x_vals[i,j]
         y = y_vals[i,j]
+
         dx = x_vals[i,j+1] - x if j < cols-1 else x - x_vals[i,j-1]
         dy = y_vals[i+1,j] - y if i < rows-1 else y - y_vals[i-1,j]
-        dx, dy = abs(dx), abs(dy)
+
+        dx = abs(dx)
+        dy = abs(dy)
+
         cell_box = box(x, y, x+dx, y+dy)
+
         if prepared_conus.intersects(cell_box):
+
             features.append({
                 "x": float(x),
                 "y": float(y),
                 "dx": float(dx),
                 "dy": float(dy),
-                "prob": float(prob[i,j])
+
+                # OUTPUT RAW VARIABLES INSTEAD OF PROBABILITY
+                "cape": float(cape[i,j]),
+                "cin": float(cin[i,j]),
+                "srh": float(hlcy[i,j])
             })
 
 print(f"Kept {len(features)} cells inside or touching CONUS.")
@@ -164,12 +167,17 @@ valid_start = f"{int(HOUR):02d}:00"
 valid_end = f"{(int(HOUR)+1)%24:02d}:00"
 
 output = {
+
     "run_date": DATE,
     "run_hour": HOUR,
     "forecast": "F01",
+
     "valid": f"{valid_start}-{valid_end} UTC",
+
     "generated": datetime.datetime.utcnow().isoformat()+"Z",
+
     "projection": params,
+
     "features": features
 }
 
