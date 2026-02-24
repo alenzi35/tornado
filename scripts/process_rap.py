@@ -17,7 +17,7 @@ from pyproj import Proj
 
 DATA_DIR = "data"
 GRIB_PATH = "data/rap.grib2"
-OUTPUT_JSON = "map/data/tornado_prob_lcc.json"
+OUTPUT_JSON = "map/data/rap_grid.json"
 
 INTERCEPT = -14
 COEFFS = {
