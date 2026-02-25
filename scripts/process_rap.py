@@ -19,11 +19,11 @@ DATA_DIR = "data"
 GRIB_PATH = "data/rap.grib2"
 OUTPUT_JSON = "map/data/tornado_prob_lcc.json"
 
-INTERCEPT = -424.37923284106375
+INTERCEPT = -6.274846902965728
 COEFFS = {
-    "CAPE": 0.92968438,
-    "CIN":  -0.17418338,
-    "HLCY": 0.86443485
+    "CAPE": 0.0007852504286701655,
+    "CIN": -0.003028035273017941,
+    "HLCY": 0.008318690761993085
 }
 
 # US Census lower 48 states 5m shapefile
