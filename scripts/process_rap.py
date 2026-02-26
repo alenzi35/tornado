@@ -109,7 +109,6 @@ x_vals, y_vals = proj_lcc(lons, lats)
 
 linear = INTERCEPT + COEFFS["CAPE"]*cape + COEFFS["CIN"]*cin + COEFFS["HLCY"]*hlcy
 prob = 1 / (1 + np.exp(-linear))
-print("Current mean probability:", np.mean(prob))
 
 # ================= DOWNLOAD CONUS SHAPE =================
 
