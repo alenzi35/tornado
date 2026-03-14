@@ -44,7 +44,7 @@ DATE, HOUR = get_target_cycle()
 FCST = "01"
 
 # ================= DOWNLOAD RAP 32km =================
-RAP_URL = f"https://noaa-rap-pds.s3.amazonaws.com/rap.{DATE}/rap.t{HOUR}z.awp32f{FCST}.grib2"
+RAP_URL = f"https://noaa-rap-pds.s3.amazonaws.com/rap.{DATE}/rap.t{HOUR}z.awip32f{FCST}.grib2"
 
 print("Target:", DATE, HOUR, f"F{FCST}")
 print("URL:", RAP_URL)
