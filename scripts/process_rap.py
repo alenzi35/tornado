@@ -68,13 +68,19 @@ print("Downloaded RAP GRIB2")
 grbs = pygrib.open(GRIB_PATH)
 
 def pick_var(grbs, shortName=None, typeOfLevel=None, level=None, topLevel=None):
+    """
+    Pick a GRIB message by exact shortName, typeOfLevel, and optional level/topLevel.
+    """
     for g in grbs:
-        match_short = shortName is None or g.shortName.lower() == shortName.lower()
-        match_type = typeOfLevel is None or g.typeOfLevel.lower() == typeOfLevel.lower()
-        match_level = level is None or getattr(g, "level", None) == level
-        match_top = topLevel is None or getattr(g, "topLevel", None) == topLevel
-        if match_short and match_type and match_level and match_top:
-            return g
+        if shortName is not None and g.shortName != shortName:
+            continue
+        if typeOfLevel is not None and g.typeOfLevel != typeOfLevel:
+            continue
+        if level is not None and g.level != level:
+            continue
+        if topLevel is not None and getattr(g, "topLevel", None) != topLevel:
+            continue
+        return g
     raise RuntimeError(
         f"Variable not found: shortName={shortName}, typeOfLevel={typeOfLevel}, level={level}, topLevel={topLevel}"
     )
@@ -89,41 +95,35 @@ cape_msg = pick_var(grbs, shortName="cape")
 grbs.seek(0)
 cin_msg = pick_var(grbs, shortName="cin")
 
-# Helicity (0-1 km) - adjust layer if needed
+# Helicity 0-1 km
 grbs.seek(0)
-hlcy_msg = pick_var(grbs, shortName="hlcy", typeOfLevel="heightAboveGroundLayer", level=0, topLevel=1000)
+hlcy_msg = pick_var(grbs, shortName="hlcy", typeOfLevel="heightAboveGroundLayer", level=1000, topLevel=1000)
 
-# Dewpoint depression fallback
+# Dewpoint depression fallback (T2 - Td2)
 grbs.seek(0)
-try:
-    depr_msg = pick_var(grbs, shortName="depr")
-    depr = np.nan_to_num(depr_msg.values)
-except:
-    t2_msg = pick_var(grbs, shortName="2t", typeOfLevel="heightAboveGround", level=2)
-    d2_msg = pick_var(grbs, shortName="2d", typeOfLevel="heightAboveGround", level=2)
-    t2 = np.nan_to_num(t2_msg.values)
-    d2 = np.nan_to_num(d2_msg.values)
-    depr = t2 - d2
+t2_msg = pick_var(grbs, shortName="2t", typeOfLevel="heightAboveGround", level=2)
+grbs.seek(0)
+d2_msg = pick_var(grbs, shortName="2d", typeOfLevel="heightAboveGround", level=2)
+t2 = np.nan_to_num(t2_msg.values)
+d2 = np.nan_to_num(d2_msg.values)
+depr = t2 - d2
 
+# 10 m U/V
+grbs.seek(0)
+u10_msg = pick_var(grbs, shortName="10u", typeOfLevel="heightAboveGround", level=10)
+grbs.seek(0)
+v10_msg = pick_var(grbs, shortName="10v", typeOfLevel="heightAboveGround", level=10)
+
+# 500 mb U/V
+grbs.seek(0)
+u500_msg = pick_var(grbs, shortName="u", typeOfLevel="isobaricInhPa", level=500)
+grbs.seek(0)
+v500_msg = pick_var(grbs, shortName="v", typeOfLevel="isobaricInhPa", level=500)
+
+# Convert to arrays
 cape = np.nan_to_num(cape_msg.values)
 cin = np.nan_to_num(cin_msg.values)
 hlcy = np.nan_to_num(hlcy_msg.values)
-
-# U/V 10 m
-grbs.seek(0)
-u10_msg = pick_var(grbs, shortName="10u", typeOfLevel="heightAboveGround", level=10)
-v10_msg = pick_var(grbs, shortName="10v", typeOfLevel="heightAboveGround", level=10)
-u10 = np.nan_to_num(u10_msg.values)
-v10 = np.nan_to_num(v10_msg.values)
-
-# U/V 500 mb
-grbs.seek(0)
-u500_msg = pick_var(grbs, shortName="u", typeOfLevel="isobaricInhPa", level=500)
-v500_msg = pick_var(grbs, shortName="v", typeOfLevel="isobaricInhPa", level=500)
-u500 = np.nan_to_num(u500_msg.values)
-v500 = np.nan_to_num(v500_msg.values)
-
-# ================= COORDS =================
 
 lats, lons = cape_msg.latlons()
 params = cape_msg.projparams
@@ -155,7 +155,6 @@ prob = 1 / (1 + np.exp(-logit))
 # ================= LOAD CONUS SHAPE =================
 
 print("Downloading CONUS shapefile...")
-
 r = requests.get(CONUS_SHAPE_URL)
 z = zipfile.ZipFile(io.BytesIO(r.content))
 z.extractall(DATA_DIR)
@@ -182,7 +181,9 @@ features = []
 
 for i in range(ny):
     for j in range(nx):
+
         p = float(prob[i,j])
+
         if p < 0.02:
             continue
 
@@ -212,15 +213,6 @@ for i in range(ny):
 
 geojson = {
     "type": "FeatureCollection",
-    "projection": {  # added for convert_borders_to_lcc.py
-        "proj": "lcc",
-        "lat_1": params["lat_1"],
-        "lat_2": params["lat_2"],
-        "lat_0": params["lat_0"],
-        "lon_0": params["lon_0"],
-        "a": params.get("a", 6371229),
-        "b": params.get("b", 6371229)
-    },
     "features": features
 }
 
@@ -228,3 +220,10 @@ with open(OUTPUT_JSON, "w") as f:
     json.dump(geojson, f)
 
 print("Saved tornado probability GeoJSON")
+
+# ================= DEBUG PRINT =================
+print("Variables extracted successfully:")
+print("T2:", t2.shape, "Td2:", d2.shape)
+print("U10:", u10_msg.values.shape, "V10:", v10_msg.values.shape)
+print("U500:", u500_msg.values.shape, "V500:", v500_msg.values.shape)
+print("HLCS 0-1 km:", hlcy.shape)
