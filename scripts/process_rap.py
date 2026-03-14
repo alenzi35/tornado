@@ -9,7 +9,7 @@ import zipfile
 import io
 
 import geopandas as gpd
-from shapely.geometry import box
+from shapely.geometry import Point
 from shapely.prepared import prep
 from pyproj import Proj
 
@@ -24,10 +24,10 @@ INTERCEPT = -6.274846902965728
 COEFFS = {
     "CAPE": 0.0007852504286701655,
     "CIN": -0.003028035273017941,
-    "HLCY": 0.008318690761993085
+    "HLCY": 0.008318690761993085,
+    "DEPR": -0.0045
 }
 
-# US Census lower 48 states 5m shapefile
 CONUS_SHAPE_URL = "https://www2.census.gov/geo/tiger/GENZ2024/shp/cb_2024_us_state_5m.zip"
 
 os.makedirs(DATA_DIR, exist_ok=True)
@@ -45,9 +45,10 @@ def get_target_cycle():
 DATE, HOUR = get_target_cycle()
 FCST = "01"
 
-# ================= DOWNLOAD RAP =================
+# ================= DOWNLOAD RAP 32km =================
 
 RAP_URL = f"https://noaa-rap-pds.s3.amazonaws.com/rap.{DATE}/rap.t{HOUR}z.awip32f{FCST}.grib2"
+
 print("Target:", DATE, HOUR, "F01")
 print("URL:", RAP_URL)
 
@@ -66,26 +67,53 @@ print("Downloaded RAP GRIB2")
 
 grbs = pygrib.open(GRIB_PATH)
 
-def pick_var(grbs, shortname, typeOfLevel=None, bottom=None, top=None):
+def pick_var(grbs, shortName=None, typeOfLevel=None, level=None, topLevel=None):
     for g in grbs:
-        if g.shortName.lower() != shortname.lower():
+        if shortName is not None and g.shortName != shortName:
             continue
-        if typeOfLevel and g.typeOfLevel != typeOfLevel:
+        if typeOfLevel is not None and getattr(g, "typeOfLevel", None) != typeOfLevel:
             continue
-        if bottom is not None and top is not None:
-            if not hasattr(g, "bottomLevel"):
-                continue
-            if not (abs(g.bottomLevel - bottom) < 1 and abs(g.topLevel - top) < 1):
-                continue
+        if level is not None and getattr(g, "level", None) != level:
+            continue
+        if topLevel is not None and getattr(g, "topLevel", None) != topLevel:
+            continue
         return g
-    raise RuntimeError(f"{shortname} not found")
+    raise RuntimeError(f"Variable not found: shortName={shortName}, typeOfLevel={typeOfLevel}, level={level}, topLevel={topLevel}")
+
+# ================= EXTRACT VARIABLES =================
 
 grbs.seek(0)
-cape_msg = pick_var(grbs, "cape", "surface")
+cape_msg = pick_var(grbs, shortName="cape")
 grbs.seek(0)
-cin_msg = pick_var(grbs, "cin", "surface")
+cin_msg = pick_var(grbs, shortName="cin")
 grbs.seek(0)
-hlcy_msg = pick_var(grbs, "hlcy", "heightAboveGroundLayer", 0, 1000)
+t2_msg = pick_var(grbs, shortName="2t", typeOfLevel="heightAboveGround", level=2)
+grbs.seek(0)
+d2_msg = pick_var(grbs, shortName="2d", typeOfLevel="heightAboveGround", level=2)
+grbs.seek(0)
+u10_msg = pick_var(grbs, shortName="10u", typeOfLevel="heightAboveGround", level=10)
+grbs.seek(0)
+v10_msg = pick_var(grbs, shortName="10v", typeOfLevel="heightAboveGround", level=10)
+grbs.seek(0)
+u500_msg = pick_var(grbs, shortName="u", typeOfLevel="isobaricInhPa", level=500)
+grbs.seek(0)
+v500_msg = pick_var(grbs, shortName="v", typeOfLevel="isobaricInhPa", level=500)
+
+# ================= HELICITY 0-1km =================
+grbs.seek(0)
+hlcy_msg = None
+for g in grbs:
+    if g.shortName == "hlcy" and getattr(g, "bottomLevel", None) == 0 and getattr(g, "topLevel", None) == 1000:
+        hlcy_msg = g
+        break
+if hlcy_msg is None:
+    raise RuntimeError("No 0-1km helicity field found")
+print("Using helicity layer:", hlcy_msg.bottomLevel, "-", hlcy_msg.topLevel)
+
+# ================= COMPUTE DEWPOINT DEPRESSION =================
+t2 = np.nan_to_num(t2_msg.values)
+d2 = np.nan_to_num(d2_msg.values)
+depr = t2 - d2
 
 cape = np.nan_to_num(cape_msg.values)
 cin = np.nan_to_num(cin_msg.values)
@@ -106,76 +134,79 @@ proj_lcc = Proj(
 
 x_vals, y_vals = proj_lcc(lons, lats)
 
-# ================= CALC PROB =================
+# ================= MODEL =================
+logit = (
+    INTERCEPT
+    + COEFFS["CAPE"] * cape
+    + COEFFS["CIN"] * cin
+    + COEFFS["HLCY"] * hlcy
+    + COEFFS["DEPR"] * depr
+)
 
-linear = INTERCEPT + COEFFS["CAPE"]*cape + COEFFS["CIN"]*cin + COEFFS["HLCY"]*hlcy
-prob = 1 / (1 + np.exp(-linear))
+prob = 1 / (1 + np.exp(-logit))
 
-# ================= DOWNLOAD CONUS SHAPE =================
-
-def download_shapefile(url, folder):
-    resp = requests.get(url)
-    resp.raise_for_status()
-    z = zipfile.ZipFile(io.BytesIO(resp.content))
-    z.extractall(folder)
-    shp_file = [f for f in z.namelist() if f.endswith(".shp")][0]
-    return gpd.read_file(f"{folder}/{shp_file}")
-
+# ================= LOAD CONUS SHAPE =================
 print("Downloading CONUS shapefile...")
-states_gdf = download_shapefile(CONUS_SHAPE_URL, "tmp_conus")
 
-# Keep only lower 48 states
-lower48 = states_gdf[~states_gdf["STUSPS"].isin(["AK","HI","PR"])]
+r = requests.get(CONUS_SHAPE_URL)
+z = zipfile.ZipFile(io.BytesIO(r.content))
+z.extractall(DATA_DIR)
 
-# Project to RAP LCC
-lower48_lcc = lower48.to_crs(proj_lcc.srs)
+shp_path = None
+for f in os.listdir(DATA_DIR):
+    if f.endswith(".shp"):
+        shp_path = os.path.join(DATA_DIR, f)
+        break
 
-# Merge into a single CONUS polygon
-conus_poly = lower48_lcc.unary_union
-prepared_conus = prep(conus_poly)
+states = gpd.read_file(shp_path)
+exclude = ["AK", "HI", "PR", "GU", "VI", "MP", "AS"]
+states = states[~states["STUSPS"].isin(exclude)]
+conus = states.unary_union
+prepared = prep(conus)
 
-# ================= FILTER CELLS =================
+# ================= GRID FILTER =================
+ny, nx = prob.shape
+dx = x_vals[0,1] - x_vals[0,0]
+dy = y_vals[1,0] - y_vals[0,0]
 
-print("Filtering grid cells to CONUS (intersects polygon)...")
 features = []
-rows, cols = prob.shape
 
-for i in range(rows):
-    for j in range(cols):
+for i in range(ny):
+    for j in range(nx):
+
+        p = float(prob[i,j])
+        if p < 0.02:
+            continue
+
+        lon = lons[i,j]
+        lat = lats[i,j]
+        if not prepared.contains(Point(lon, lat)):
+            continue
+
         x = x_vals[i,j]
         y = y_vals[i,j]
-        dx = x_vals[i,j+1] - x if j < cols-1 else x - x_vals[i,j-1]
-        dy = y_vals[i+1,j] - y if i < rows-1 else y - y_vals[i-1,j]
-        dx, dy = abs(dx), abs(dy)
-        cell_box = box(x, y, x+dx, y+dy)
-        if prepared_conus.intersects(cell_box):
-            features.append({
-                "x": float(x),
-                "y": float(y),
-                "dx": float(dx),
-                "dy": float(dy),
-                "prob": float(prob[i,j])
-            })
 
-print(f"Kept {len(features)} cells inside or touching CONUS.")
+        features.append({
+            "type": "Feature",
+            "geometry": {
+                "type": "Polygon",
+                "coordinates": [[
+                    [x - dx/2, y - dy/2],
+                    [x + dx/2, y - dy/2],
+                    [x + dx/2, y + dy/2],
+                    [x - dx/2, y + dy/2],
+                    [x - dx/2, y - dy/2]
+                ]]
+            },
+            "properties": {"p": p}
+        })
 
-# ================= OUTPUT =================
-
-valid_start = f"{int(HOUR):02d}:00"
-valid_end = f"{(int(HOUR)+1)%24:02d}:00"
-
-output = {
-    "run_date": DATE,
-    "run_hour": HOUR,
-    "forecast": "F01",
-    "valid": f"{valid_start}-{valid_end} UTC",
-    "generated": datetime.datetime.utcnow().isoformat()+"Z",
-    "projection": params,
+geojson = {
+    "type": "FeatureCollection",
     "features": features
 }
 
 with open(OUTPUT_JSON, "w") as f:
-    json.dump(output, f)
+    json.dump(geojson, f)
 
-print("Saved:", OUTPUT_JSON)
-print("DONE.")
+print("Saved tornado probability GeoJSON")
