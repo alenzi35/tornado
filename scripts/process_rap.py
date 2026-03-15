@@ -1,183 +1,187 @@
 import os
-import urllib.request
+import json
+import requests
+from datetime import datetime, timedelta
 import pygrib
 import numpy as np
-import json
-import datetime
-import requests
-import zipfile
-import io
 
-import geopandas as gpd
-from shapely.geometry import box
-from shapely.prepared import prep
-from pyproj import Proj
+OUT_JSON = "map/data/tornado_prob_lcc.json"
+TMP_GRIB = "rap.grib2"
 
-# ================= CONFIG =================
+# -------------------------------------------------
+# Find latest available RAP run
+# -------------------------------------------------
 
-DATA_DIR = "data"
-GRIB_PATH = "data/rap.grib2"
-OUTPUT_JSON = "map/data/tornado_prob_lcc.json"
+now = datetime.utcnow()
 
-INTERCEPT = -6.274846902965728
+rap_url = None
+run_hour = None
+date_str = None
 
-COEFFS = {
-    "CAPE": 0.0007852504286701655,
-    "CIN": -0.003028035273017941,
-    "HLCY": 0.008318690761993085
-}
+for h in range(0, 6):
+    test_time = now - timedelta(hours=h)
 
-# US Census lower 48 states 5m shapefile
-CONUS_SHAPE_URL = "https://www2.census.gov/geo/tiger/GENZ2024/shp/cb_2024_us_state_5m.zip"
+    date_str = test_time.strftime("%Y%m%d")
+    run_hour = test_time.hour
 
-os.makedirs(DATA_DIR, exist_ok=True)
-os.makedirs("map/data", exist_ok=True)
+    url = f"https://noaa-rap-pds.s3.amazonaws.com/rap.{date_str}/rap.t{run_hour:02d}z.awip32f01.grib2"
 
-# ================= TIME LOGIC =================
-
-def get_target_cycle():
-    now = datetime.datetime.utcnow()
-    run_time = now - datetime.timedelta(hours=1)
-    date = run_time.strftime("%Y%m%d")
-    hour = run_time.strftime("%H")
-    return date, hour
-
-DATE, HOUR = get_target_cycle()
-FCST = "01"
-
-# ================= DOWNLOAD RAP =================
-
-RAP_URL = f"https://noaa-rap-pds.s3.amazonaws.com/rap.{DATE}/rap.t{HOUR}z.awip32f{FCST}.grib2"
-print("Target:", DATE, HOUR, "F01")
-print("URL:", RAP_URL)
-
-def url_exists(url):
     r = requests.head(url)
-    return r.status_code == 200
 
-if not url_exists(RAP_URL):
-    print("RAP file not ready yet. Skipping.")
-    exit(0)
+    if r.status_code == 200:
+        rap_url = url
+        break
 
-urllib.request.urlretrieve(RAP_URL, GRIB_PATH)
+if rap_url is None:
+    raise RuntimeError("No RAP run found in last 6 hours")
+
+print(f"Using RAP run: {date_str} {run_hour:02d}z F01")
+print("URL:", rap_url)
+
+# -------------------------------------------------
+# Download GRIB
+# -------------------------------------------------
+
+r = requests.get(rap_url)
+r.raise_for_status()
+
+with open(TMP_GRIB, "wb") as f:
+    f.write(r.content)
+
 print("Downloaded RAP GRIB2")
 
-# ================= LOAD GRIB =================
+# -------------------------------------------------
+# Open GRIB
+# -------------------------------------------------
 
-grbs = pygrib.open(GRIB_PATH)
+grbs = pygrib.open(TMP_GRIB)
 
-def pick_var(grbs, shortname, typeOfLevel=None, bottom=None, top=None):
+# -------------------------------------------------
+# Variable selector
+# -------------------------------------------------
+
+def pick_var(grbs, shortName, typeOfLevel=None, level=None):
+
+    grbs.seek(0)  # reset iterator
+
     for g in grbs:
-        if g.shortName.lower() != shortname.lower():
+
+        if g.shortName != shortName:
             continue
+
         if typeOfLevel and g.typeOfLevel != typeOfLevel:
             continue
-        if bottom is not None and top is not None:
-            if not hasattr(g, "bottomLevel"):
-                continue
-            if not (abs(g.bottomLevel - bottom) < 1 and abs(g.topLevel - top) < 1):
-                continue
+
+        if level is not None and g.level != level:
+            continue
+
         return g
-    raise RuntimeError(f"{shortname} not found")
 
-grbs.seek(0)
-cape_msg = pick_var(grbs, "cape", "surface")
-grbs.seek(0)
-cin_msg = pick_var(grbs, "cin", "surface")
-grbs.seek(0)
-hlcy_msg = pick_var(grbs, "hlcy", "heightAboveGroundLayer", 0, 1000)
+    raise RuntimeError(
+        f"Variable not found: shortName={shortName}, typeOfLevel={typeOfLevel}, level={level}"
+    )
 
-cape = np.nan_to_num(cape_msg.values)
-cin = np.nan_to_num(cin_msg.values)
-hlcy = np.nan_to_num(hlcy_msg.values)
+# -------------------------------------------------
+# Extract variables
+# -------------------------------------------------
+
+cape_msg = pick_var(grbs, "cape", "pressureFromGroundLayer", level=18000)
+cin_msg  = pick_var(grbs, "cin",  "pressureFromGroundLayer", level=18000)
+
+hlcy_msg = pick_var(grbs, "hlcy", "heightAboveGroundLayer", level=1000)
+
+t2_msg  = pick_var(grbs, "2t",  "heightAboveGround", level=2)
+td2_msg = pick_var(grbs, "2d",  "heightAboveGround", level=2)
+
+u10_msg = pick_var(grbs, "10u", "heightAboveGround", level=10)
+v10_msg = pick_var(grbs, "10v", "heightAboveGround", level=10)
+
+u500_msg = pick_var(grbs, "u", "isobaricInhPa", level=500)
+v500_msg = pick_var(grbs, "v", "isobaricInhPa", level=500)
+
+# -------------------------------------------------
+# Grid + projection
+# -------------------------------------------------
 
 lats, lons = cape_msg.latlons()
-params = cape_msg.projparams
+projparams = cape_msg.projparams
 
-proj_lcc = Proj(
-    proj="lcc",
-    lat_1=params["lat_1"],
-    lat_2=params["lat_2"],
-    lat_0=params["lat_0"],
-    lon_0=params["lon_0"],
-    a=params.get("a", 6371229),
-    b=params.get("b", 6371229)
-)
+dx = cape_msg["DxInMetres"]
+dy = cape_msg["DyInMetres"]
 
-x_vals, y_vals = proj_lcc(lons, lats)
+# -------------------------------------------------
+# Values
+# -------------------------------------------------
 
-# ================= CALC PROB =================
+cape = cape_msg.values
+cin  = cin_msg.values
+hlcy = hlcy_msg.values
 
-linear = INTERCEPT + COEFFS["CAPE"]*cape + COEFFS["CIN"]*cin + COEFFS["HLCY"]*hlcy
-prob = 1 / (1 + np.exp(-linear))
+t2  = t2_msg.values
+td2 = td2_msg.values
 
-# ================= DOWNLOAD CONUS SHAPE =================
+u10 = u10_msg.values
+v10 = v10_msg.values
 
-def download_shapefile(url, folder):
-    resp = requests.get(url)
-    resp.raise_for_status()
-    z = zipfile.ZipFile(io.BytesIO(resp.content))
-    z.extractall(folder)
-    shp_file = [f for f in z.namelist() if f.endswith(".shp")][0]
-    return gpd.read_file(f"{folder}/{shp_file}")
+u500 = u500_msg.values
+v500 = v500_msg.values
 
-print("Downloading CONUS shapefile...")
-states_gdf = download_shapefile(CONUS_SHAPE_URL, "tmp_conus")
+# -------------------------------------------------
+# Derived parameters
+# -------------------------------------------------
 
-# Keep only lower 48 states
-lower48 = states_gdf[~states_gdf["STUSPS"].isin(["AK","HI","PR"])]
+lcl = (t2 - td2) * 125
 
-# Project to RAP LCC
-lower48_lcc = lower48.to_crs(proj_lcc.srs)
+shear = np.sqrt((u500 - u10)**2 + (v500 - v10)**2)
 
-# Merge into a single CONUS polygon
-conus_poly = lower48_lcc.unary_union
-prepared_conus = prep(conus_poly)
+# -------------------------------------------------
+# Build grid cells
+# -------------------------------------------------
 
-# ================= FILTER CELLS =================
-
-print("Filtering grid cells to CONUS (intersects polygon)...")
 features = []
-rows, cols = prob.shape
 
-for i in range(rows):
-    for j in range(cols):
-        x = x_vals[i,j]
-        y = y_vals[i,j]
-        dx = x_vals[i,j+1] - x if j < cols-1 else x - x_vals[i,j-1]
-        dy = y_vals[i+1,j] - y if i < rows-1 else y - y_vals[i-1,j]
-        dx, dy = abs(dx), abs(dy)
-        cell_box = box(x, y, x+dx, y+dy)
-        if prepared_conus.intersects(cell_box):
-            features.append({
-                "x": float(x),
-                "y": float(y),
-                "dx": float(dx),
-                "dy": float(dy),
-                "prob": float(prob[i,j])
-            })
+ny, nx = cape.shape
 
-print(f"Kept {len(features)} cells inside or touching CONUS.")
+for j in range(ny):
+    for i in range(nx):
 
-# ================= OUTPUT =================
+        features.append({
+            "x": float(i * dx),
+            "y": float(j * dy),
+            "dx": float(dx),
+            "dy": float(dy),
 
-valid_start = f"{int(HOUR):02d}:00"
-valid_end = f"{(int(HOUR)+1)%24:02d}:00"
+            "cape": float(cape[j, i]),
+            "cin": float(cin[j, i]),
+            "hlcy": float(hlcy[j, i]),
+
+            "t2": float(t2[j, i]),
+            "td2": float(td2[j, i]),
+
+            "lcl": float(lcl[j, i]),
+            "shear": float(shear[j, i])
+        })
+
+# -------------------------------------------------
+# Save JSON with projection
+# -------------------------------------------------
 
 output = {
-    "run_date": DATE,
-    "run_hour": HOUR,
-    "forecast": "F01",
-    "valid": f"{valid_start}-{valid_end} UTC",
-    "generated": datetime.datetime.utcnow().isoformat()+"Z",
-    "projection": params,
+    "projection": {
+        "lat_1": projparams["lat_1"],
+        "lat_2": projparams["lat_2"],
+        "lat_0": projparams["lat_0"],
+        "lon_0": projparams["lon_0"],
+        "a": projparams.get("a", 6371229),
+        "b": projparams.get("b", 6371229)
+    },
     "features": features
 }
 
-with open(OUTPUT_JSON, "w") as f:
+os.makedirs("map/data", exist_ok=True)
+
+with open(OUT_JSON, "w") as f:
     json.dump(output, f)
 
-print("Saved:", OUTPUT_JSON)
-print("DONE.")
-
-
+print("Saved:", OUT_JSON)
+print("Total cells:", len(features))
