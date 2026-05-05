@@ -1,246 +1,308 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-<meta charset="utf-8">
-<title>Tornado Probability</title>
+<meta charset="UTF-8" />
+<title>LCC Tornado Probability Map</title>
 
 <style>
-body{
-margin:0;
-overflow:hidden;
-background:#000;
-font-family:Arial,Helvetica,sans-serif;
-}
+  body {
+    margin: 0;
+    overflow: hidden;
+    background: #111;
+  }
 
-#tooltip{
-position:absolute;
-display:none;
-background:rgba(0,0,0,0.85);
-color:white;
-padding:8px;
-border-radius:4px;
-font-size:12px;
-pointer-events:none;
-line-height:1.4;
-}
+  canvas {
+    display: block;
+  }
+
+  #tooltip {
+    position: absolute;
+    padding: 6px 10px;
+    background: rgba(0,0,0,0.85);
+    color: white;
+    border-radius: 5px;
+    pointer-events: none;
+    display: none;
+    font-family: sans-serif;
+    font-size: 13px;
+    white-space: nowrap;
+  }
+
+  #forecastInfo {
+    position: absolute;
+    top: 10px;
+    left: 10px;
+    padding: 8px 12px;
+    background: rgba(0,0,0,0.7);
+    color: white;
+    font-family: sans-serif;
+    font-size: 13px;
+    border-radius: 6px;
+    z-index: 10;
+  }
 </style>
 </head>
 
 <body>
 
-<canvas id="map"></canvas>
+<canvas id="mapCanvas"></canvas>
 <div id="tooltip"></div>
+<div id="forecastInfo">Loading forecast…</div>
 
 <script>
 
-const canvas = document.getElementById("map")
-const ctx = canvas.getContext("2d")
-const tooltip = document.getElementById("tooltip")
+const canvas = document.getElementById("mapCanvas");
+const ctx = canvas.getContext("2d");
+const tooltip = document.getElementById("tooltip");
+const infoBox = document.getElementById("forecastInfo");
 
-function resize(){
-canvas.width = window.innerWidth
-canvas.height = window.innerHeight
-draw()
+let scale = 1;
+let offsetX = 0;
+let offsetY = 0;
+
+let dragging = false;
+let lastX, lastY;
+
+let cells = [];
+let borders = [];
+
+
+// --------------------------------
+// Resize
+// --------------------------------
+
+function resizeCanvas() {
+  canvas.width = window.innerWidth;
+  canvas.height = window.innerHeight;
 }
 
-window.addEventListener("resize",resize)
-resize()
+window.addEventListener("resize", resizeCanvas);
+resizeCanvas();
 
-let cells=[]
-let borders=[]
 
-let scale=1
-let offsetX=0
-let offsetY=0
+// --------------------------------
+// Load borders
+// --------------------------------
 
-// =========================
-// Projection helpers
-// =========================
+fetch("map/data/borders_lcc.json")
+  .then(r => r.json())
+  .then(data => {
+    borders = data.features;
+    fitView();
+    draw();
+  });
 
-function lccToScreen(x,y){
-return{
-x:(x+offsetX)*scale + canvas.width/2,
-y:(-y+offsetY)*scale + canvas.height/2
+
+// --------------------------------
+// Load probability grid
+// --------------------------------
+
+fetch("map/data/tornado_prob_lcc.json")
+  .then(r => r.json())
+  .then(data => {
+
+    cells = data.features;
+
+    const runDate = data.run_date;
+    const runHour = parseInt(data.run_hour,10);
+    const fcst = data.forecast;
+
+    const fcstHour = runHour + 1;
+    const validStart = fcstHour % 24;
+    const validEnd = (fcstHour + 1) % 24;
+
+    function pad(n){return n.toString().padStart(2,"0");}
+
+    infoBox.innerHTML =
+      `Run: ${runDate} ${pad(runHour)}Z (${fcst})<br>
+       Valid: ${pad(validStart)}:00-${pad(validEnd)}:00 UTC`;
+
+    fitView();
+    draw();
+  });
+
+
+// --------------------------------
+// Discrete probability colors
+// --------------------------------
+
+function probToColor(p) {
+  if (p < 0.004) return 'white';
+  else if (p <= 0.01) return 'green';
+  else if (p <= 0.02) return 'brown';
+  else return 'yellow';
 }
+
+
+// --------------------------------
+// Fit map to screen
+// --------------------------------
+
+function fitView() {
+
+  if (cells.length === 0) return;
+
+  let minX=Infinity,maxX=-Infinity;
+  let minY=Infinity,maxY=-Infinity;
+
+  cells.forEach(c=>{
+    minX=Math.min(minX,c.x);
+    maxX=Math.max(maxX,c.x+c.dx);
+    minY=Math.min(minY,c.y);
+    maxY=Math.max(maxY,c.y+c.dy);
+  });
+
+  borders.forEach(line=>{
+    line.forEach(([x,y])=>{
+      minX=Math.min(minX,x);
+      maxX=Math.max(maxX,x);
+      minY=Math.min(minY,y);
+      maxY=Math.max(maxY,y);
+    });
+  });
+
+  const rx=maxX-minX;
+  const ry=maxY-minY;
+
+  scale=Math.min(canvas.width/rx,canvas.height/ry)*0.9;
+
+  offsetX=canvas.width/2-(minX+rx/2)*scale;
+  offsetY=canvas.height/2+(minY+ry/2)*scale;
 }
 
-function screenToLCC(px,py){
-return{
-x:(px-canvas.width/2)/scale-offsetX,
-y:-(py-canvas.height/2)/scale-offsetY
-}
-}
 
-// =========================
-// Draw function
-// =========================
+// --------------------------------
+// Draw map
+// --------------------------------
 
 function draw(){
 
-ctx.clearRect(0,0,canvas.width,canvas.height)
+  ctx.setTransform(1,0,0,1,0,0);
+  ctx.clearRect(0,0,canvas.width,canvas.height);
 
-for(const c of cells){
+  ctx.setTransform(scale,0,0,-scale,offsetX,offsetY);
 
-const p=lccToScreen(c.x,c.y)
+  cells.forEach(c=>{
+    ctx.fillStyle=probToColor(c.prob);
+    ctx.fillRect(c.x,c.y,c.dx,c.dy);
+  });
 
-const w=c.dx*scale
-const h=c.dy*scale
+  ctx.strokeStyle="white";
+  ctx.lineWidth=1/scale;
 
-const prob=c.prob
+  ctx.beginPath();
 
-if(prob<=0) continue
+  borders.forEach(line=>{
+    line.forEach(([x,y],i)=>{
+      if(i===0) ctx.moveTo(x,y);
+      else ctx.lineTo(x,y);
+    });
+  });
 
-const r=Math.min(255,prob*4000)
-const g=0
-const b=0
-
-ctx.fillStyle=`rgb(${r},${g},${b})`
-
-ctx.fillRect(p.x,p.y,w,h)
-
+  ctx.stroke();
 }
 
-ctx.strokeStyle="white"
-ctx.lineWidth=1
 
-for(const line of borders){
+// --------------------------------
+// Screen → LCC conversion
+// --------------------------------
 
-ctx.beginPath()
-
-for(let i=0;i<line.length;i++){
-
-const p=lccToScreen(line[i][0],line[i][1])
-
-if(i===0) ctx.moveTo(p.x,p.y)
-else ctx.lineTo(p.x,p.y)
-
+function screenToLCC(px,py){
+  return {
+    x:(px-offsetX)/scale,
+    y:-(py-offsetY)/scale
+  };
 }
 
-ctx.stroke()
 
-}
+// --------------------------------
+// Tooltip (UPDATED)
+// --------------------------------
 
-}
+canvas.addEventListener("mousemove", e => {
 
-// =========================
+  const {x, y} = screenToLCC(e.offsetX, e.offsetY);
+
+  let hit = null;
+
+  for (const c of cells) {
+    if (x >= c.x && x <= c.x + c.dx && y >= c.y && y <= c.y + c.dy) {
+      hit = c;
+      break;
+    }
+  }
+
+  if (hit) {
+
+    tooltip.style.display = "block";
+    tooltip.style.left = (e.pageX + 12) + "px";
+    tooltip.style.top = (e.pageY + 12) + "px";
+
+    tooltip.innerHTML =
+`<b>Tornado Probability</b><br>
+${(hit.prob * 100).toFixed(3)} %<br><br>
+
+<b>Thermodynamics</b><br>
+CAPE: ${hit.cape ? hit.cape.toFixed(0) : "N/A"} J/kg<br>
+CIN: ${hit.cin ? hit.cin.toFixed(0) : "N/A"} J/kg<br>
+SRH (0-1km): ${hit.hlcy ? hit.hlcy.toFixed(0) : "N/A"} m²/s²<br><br>
+
+<b>Derived Parameters</b><br>
+LCL: ${hit.lcl ? hit.lcl.toFixed(0) : "N/A"} m<br>
+0–6 km Shear: ${hit.shear ? hit.shear.toFixed(1) : "N/A"} m/s`;
+
+  } else {
+    tooltip.style.display = "none";
+  }
+
+});
+
+
+// --------------------------------
 // Zoom
-// =========================
+// --------------------------------
 
 canvas.addEventListener("wheel",e=>{
 
-e.preventDefault()
+  e.preventDefault();
 
-const zoom=e.deltaY<0?1.15:0.85
+  const z=e.deltaY<0?1.15:0.87;
 
-const mouse=screenToLCC(e.offsetX,e.offsetY)
+  offsetX=e.offsetX-z*(e.offsetX-offsetX);
+  offsetY=e.offsetY-z*(e.offsetY-offsetY);
 
-scale*=zoom
+  scale*=z;
 
-offsetX=mouse.x-(mouse.x-offsetX)*zoom
-offsetY=mouse.y-(mouse.y-offsetY)*zoom
+  draw();
 
-draw()
+});
 
-})
 
-// =========================
+// --------------------------------
 // Pan
-// =========================
-
-let dragging=false
-let lastX=0
-let lastY=0
+// --------------------------------
 
 canvas.addEventListener("mousedown",e=>{
-dragging=true
-lastX=e.clientX
-lastY=e.clientY
-})
+  dragging=true;
+  lastX=e.clientX;
+  lastY=e.clientY;
+});
 
-canvas.addEventListener("mouseup",()=>dragging=false)
-canvas.addEventListener("mouseleave",()=>dragging=false)
+window.addEventListener("mouseup",()=>dragging=false);
 
-canvas.addEventListener("mousemove",e=>{
+window.addEventListener("mousemove",e=>{
 
-if(dragging){
+  if(!dragging) return;
 
-offsetX+=(e.clientX-lastX)/scale
-offsetY-=(e.clientY-lastY)/scale
+  offsetX+=e.clientX-lastX;
+  offsetY+=e.clientY-lastY;
 
-lastX=e.clientX
-lastY=e.clientY
+  lastX=e.clientX;
+  lastY=e.clientY;
 
-draw()
+  draw();
 
-}
-
-// =========================
-// Tooltip detection
-// =========================
-
-const {x,y}=screenToLCC(e.offsetX,e.offsetY)
-
-let hit=null
-
-for(const c of cells){
-
-if(x>=c.x && x<=c.x+c.dx && y>=c.y && y<=c.y+c.dy){
-hit=c
-break
-}
-
-}
-
-if(hit){
-
-tooltip.style.display="block"
-tooltip.style.left=(e.pageX+12)+"px"
-tooltip.style.top=(e.pageY+12)+"px"
-
-let html=`Probability: ${(hit.prob*100).toFixed(4)}%`
-
-if(hit.cape!==undefined)
-html+=`<br>CAPE: ${hit.cape.toFixed(0)} J/kg`
-
-if(hit.cin!==undefined)
-html+=`<br>CIN: ${hit.cin.toFixed(0)} J/kg`
-
-if(hit.helicity!==undefined)
-html+=`<br>SRH: ${hit.helicity.toFixed(0)} m²/s²`
-
-if(hit.lcl!==undefined)
-html+=`<br>LCL: ${hit.lcl.toFixed(0)} m`
-
-if(hit.shear!==undefined)
-html+=`<br>Shear: ${hit.shear.toFixed(0)} kt`
-
-tooltip.innerHTML=html
-
-}else{
-
-tooltip.style.display="none"
-
-}
-
-})
-
-// =========================
-// Load data
-// =========================
-
-fetch("tornado_prob_lcc.json")
-.then(r=>r.json())
-.then(d=>{
-cells=d
-draw()
-})
-
-fetch("borders_lcc.json")
-.then(r=>r.json())
-.then(d=>{
-borders=d
-draw()
-})
+});
 
 </script>
 
