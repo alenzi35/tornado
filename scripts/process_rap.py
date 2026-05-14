@@ -19,14 +19,14 @@ DATA_DIR = "data"
 GRIB_PATH = "data/rap.grib2"
 OUTPUT_JSON = "map/data/tornado_prob_lcc.json"
 
-INTERCEPT = -17
+INTERCEPT = -24.35
 
 COEFFS = {
-    "cape": 0.0021324189697116643,
-    "cin": 0.008942617762917379,
-    "hlcy": 0.018720917668776572,
-    "lcl": -0.0016170131538717455,
-    "shear": 0.1554364973798813
+    "cape": 0.0007945647876223339,
+    "cin": 0.021372469094865523,
+    "hlcy": 0.022311258467003214,
+    "lcl": -0.0012882944616761658,
+    "shear": 0.2774384553299831
 }
 
 # US Census lower 48 states 5m shapefile
@@ -178,6 +178,8 @@ linear = (
 )
 
 prob = 1 / (1 + np.exp(-linear))
+print("Current mean probability (decimal):", np.mean(prob))
+print("Current mean probability (%):", np.mean(prob)*100)
 
 # ================= DOWNLOAD CONUS SHAPE =================
 
