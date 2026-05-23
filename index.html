@@ -243,7 +243,7 @@ canvas.addEventListener("mousemove", e => {
 ${(hit.prob * 100).toFixed(3)} %<br><br>
 
 CAPE: ${hit.cape ? hit.cape.toFixed(0) : "0"} J/kg<br>
-CIN: ${hit.cin ? hit.cin.toFixed(0) : "0"} J/kg<br>
+CIN: ${hit.cin ? hit.cin.toFixed(0) : "-0"} J/kg<br>
 SRH (0-1km): ${hit.hlcy ? hit.hlcy.toFixed(0) : "0"} m²/s²<br><br>
 LCL: ${hit.lcl ? hit.lcl.toFixed(0) : "0"} m<br>
 0–6 km Shear: ${hit.shear ? hit.shear.toFixed(1) : "0.0"} m/s`;
