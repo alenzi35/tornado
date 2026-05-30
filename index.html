@@ -66,11 +66,6 @@ let lastX, lastY;
 let cells = [];
 let borders = [];
 
-
-// --------------------------------
-// Resize
-// --------------------------------
-
 function resizeCanvas() {
   canvas.width = window.innerWidth;
   canvas.height = window.innerHeight;
@@ -79,11 +74,6 @@ function resizeCanvas() {
 window.addEventListener("resize", resizeCanvas);
 resizeCanvas();
 
-
-// --------------------------------
-// Load borders
-// --------------------------------
-
 fetch("map/data/borders_lcc.json")
   .then(r => r.json())
   .then(data => {
@@ -91,11 +81,6 @@ fetch("map/data/borders_lcc.json")
     fitView();
     draw();
   });
-
-
-// --------------------------------
-// Load probability grid
-// --------------------------------
 
 fetch("map/data/tornado_prob_lcc.json")
   .then(r => r.json())
@@ -121,22 +106,12 @@ fetch("map/data/tornado_prob_lcc.json")
     draw();
   });
 
-
-// --------------------------------
-// Discrete probability colors
-// --------------------------------
-
 function probToColor(p) {
   if (p < 0.004) return 'white';
   else if (p <= 0.01) return 'green';
   else if (p <= 0.02) return 'brown';
   else return 'yellow';
 }
-
-
-// --------------------------------
-// Fit map to screen
-// --------------------------------
 
 function fitView() {
 
@@ -170,11 +145,6 @@ function fitView() {
   offsetY=canvas.height/2+(minY+ry/2)*scale;
 }
 
-
-// --------------------------------
-// Draw map
-// --------------------------------
-
 function draw(){
 
   ctx.setTransform(1,0,0,1,0,0);
@@ -187,7 +157,7 @@ function draw(){
     ctx.fillRect(c.x,c.y,c.dx,c.dy);
   });
 
-  ctx.strokeStyle="white";
+  ctx.strokeStyle="black";
   ctx.lineWidth=1/scale;
 
   ctx.beginPath();
@@ -202,11 +172,6 @@ function draw(){
   ctx.stroke();
 }
 
-
-// --------------------------------
-// Screen → LCC conversion
-// --------------------------------
-
 function screenToLCC(px,py){
   return {
     x:(px-offsetX)/scale,
@@ -214,11 +179,7 @@ function screenToLCC(px,py){
   };
 }
 
-
-// --------------------------------
-// Tooltip (UPDATED)
-// --------------------------------
-
+// FIXED TOOLTIP
 canvas.addEventListener("mousemove", e => {
 
   const {x, y} = screenToLCC(e.offsetX, e.offsetY);
@@ -244,7 +205,7 @@ ${(hit.prob * 100).toFixed(3)} %<br><br>
 
 CAPE: ${hit.cape ? hit.cape.toFixed(0) : "0"} J/kg<br>
 CIN: ${hit.cin ? hit.cin.toFixed(0) : "-0"} J/kg<br>
-SRH (0-1km): ${hit.hlcy ? hit.hlcy.toFixed(0) : "0"} m²/s²<br><br>
+SRH (0-1km): ${hit.hlcy ? hit.hlcy.toFixed(0) : "0"} m²/s²<br>
 LCL: ${hit.lcl ? hit.lcl.toFixed(0) : "0"} m<br>
 0–6 km Shear: ${hit.shear ? hit.shear.toFixed(1) : "0.0"} m/s`;
 
@@ -253,11 +214,6 @@ LCL: ${hit.lcl ? hit.lcl.toFixed(0) : "0"} m<br>
   }
 
 });
-
-
-// --------------------------------
-// Zoom
-// --------------------------------
 
 canvas.addEventListener("wheel",e=>{
 
@@ -273,11 +229,6 @@ canvas.addEventListener("wheel",e=>{
   draw();
 
 });
-
-
-// --------------------------------
-// Pan
-// --------------------------------
 
 canvas.addEventListener("mousedown",e=>{
   dragging=true;
